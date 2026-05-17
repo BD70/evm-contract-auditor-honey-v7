@@ -45,7 +45,12 @@ export interface RunnerSnapshot {
   args: StartArgs | null;
 }
 
-const BUF_SIZE = 10_000;
+// Per-runner log ring. Dropped from 10_000 → 2_000 because we run 14 chain
+// runners and the previous setting could keep ~14 × 10k × ~300 B = ~42 MB of
+// log lines pinned in panel-process memory, contributing to the Node-OOM /
+// pm2-restart cycle that made AVAX (largest backlog) look like it was
+// "crashing". 2_000 lines × 14 chains ≈ 8 MB worst-case.
+const BUF_SIZE = 2_000;
 const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? 9090);
 
 export class RunnerController extends EventEmitter {

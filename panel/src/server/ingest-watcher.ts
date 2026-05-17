@@ -34,6 +34,27 @@ class IngestWatcher {
   private seen = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  /** mtime cache for checkpoint.json so we only re-parse when the file actually changes. */
+  private checkpointMtime = new Map<string, number>();
+
+  /** True iff this checkpoint lives at `<STATE_DIR>/<slug>/checkpoint.json`
+   * (= a per-chain runner artifact) and NOT at `<STATE_DIR>/checkpoint.json`
+   * (= the legacy single-runner format that ingestCheckpoint actually parses). */
+  private isPerSlugCheckpoint(p: string): boolean {
+    const rel = path.relative(panelPaths.stateDir, p).split(path.sep);
+    return rel.length === 2 && rel[1] === "checkpoint.json";
+  }
+
+  /** Cheap mtime cache so we don't re-parse multi-MB blobs when nothing changed. */
+  private async ingestCheckpointIfChanged(p: string): Promise<void> {
+    try {
+      const stat = await fsp.stat(p);
+      const last = this.checkpointMtime.get(p) ?? 0;
+      if (stat.mtimeMs === last) return;
+      this.checkpointMtime.set(p, stat.mtimeMs);
+      await this.ingestCheckpoint(p);
+    } catch {}
+  }
 
   async startIfNeeded() {
     if (this.started) return;
@@ -159,7 +180,19 @@ class IngestWatcher {
   private async handlePath(p: string): Promise<boolean> {
     const base = path.basename(p);
     if (base === "checkpoint.json") {
-      await this.ingestCheckpoint(p);
+      // ingestCheckpoint only cares about the legacy single-runner format which
+      // emits `deliveredEvents` / `pendingWebhookEvents` at the root. Per-chain
+      // runners emit a wholly different shape (`{ chainId, lastProcessedBlock,
+      // history[] }`) and the function is a no-op on them — but a no-op that
+      // JSON.parses up to ~1.5 MB per file every 5s, which is the ~45 MB/tick
+      // churn that was tipping the panel into Node OOM every ~15 min. Short-
+      // circuit per-slug checkpoints entirely.
+      if (this.isPerSlugCheckpoint(p)) {
+        // Mark as seen so we don't keep re-checking; reconcile will still
+        // pick it up if the slug changes structure (unlikely).
+        return false;
+      }
+      await this.ingestCheckpointIfChanged(p);
       return true;
     }
     if (!p.endsWith(".json")) return false;

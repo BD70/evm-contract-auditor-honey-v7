@@ -22,11 +22,20 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       min_uptime: "30s",
-      max_memory_restart: "1500M",
+      // Heap ceiling raised from 1500M → 4500M and matching NODE_OPTIONS bumped
+      // from 2048 to 5120 MB. Empirically the panel's working set sits around
+      // 2.0–2.2 GB when servicing 14 chain runners + the sim worker + ingest
+      // reconciliation; the previous 2 GB Node heap was getting exhausted
+      // mid-GC (see Mark-Compact trace in evm-auditor-panel-error.log) and
+      // pm2 restarted us every ~15 min. Restart-on-memory is still in place
+      // as a safety net but now at a level that won't trigger during normal
+      // multi-chain operation. macOS hosts here have ≥16 GB of RAM so 5 GB
+      // ceiling is well within physical bounds.
+      max_memory_restart: "4500M",
       kill_timeout: 5000,
       env: {
         NODE_ENV: "production",
-        NODE_OPTIONS: "--max-old-space-size=2048",
+        NODE_OPTIONS: "--max-old-space-size=5120",
       },
     },
   ],
