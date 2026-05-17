@@ -250,6 +250,8 @@ export function FindingDetail({ id }: { id: string }) {
         <ExposurePanel chainId={f.chain_id} address={f.contract_address} surface={surfaceForRule(f.rule_id)} />
       )}
 
+      <ProofOfExploitPanel findingId={f.id} />
+
       <Tabs.Root defaultValue="summary" variant="line">
         <Tabs.List>
           <Tabs.Trigger value="summary">Summary</Tabs.Trigger>
@@ -906,5 +908,271 @@ function SummaryView({ finding: f }: { finding: Finding }) {
         <Text fontSize="sm" color="fg.muted">no rendered summary on this finding.</Text>
       )}
     </Stack>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProofOfExploitPanel
+//
+// Shows the rescue-prove PoE artifact (when present): verdict, total rescued
+// USD, asset breakdown, and the drain plan that moved them on the fork. Also
+// renders the timeline of rescue-related actions logged for this finding.
+//
+// When no PoE exists yet (typical for findings whose rule isn't in rescue-
+// prove's v1 scope — economic.*, access.*, etc), the panel renders nothing
+// so it doesn't visually pollute the page with empty state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PoeAsset {
+  token: string | null;
+  amountBase: string;
+  symbol: string;
+  decimals: number;
+  usdValue: number | null;
+}
+interface PoeStep {
+  index: number;
+  to: string;
+  data: string;
+  value: string;
+  asset: string;
+  gasUsed: string | null;
+  success: boolean;
+  revertReason: string | null;
+}
+interface PoeResp {
+  finding: { id: string; ruleId: string; contractAddress: string | null; chainId: number | null };
+  poe: {
+    attemptId: string;
+    findingId: string;
+    chainId: number;
+    contractAddress: string;
+    attackerKind: "any" | "owner" | "unknown";
+    escrowAddress: string;
+    verdict:
+      | "true_positive_drained"
+      | "true_positive_partial"
+      | "no_rescue_possible"
+      | "skipped"
+      | "error";
+    blockNumber: number | null;
+    rescuedAssets: PoeAsset[];
+    drainPlan: PoeStep[];
+    totalRescuedUsd: number | null;
+    notes: string[];
+    engine: string;
+    engineVersion: string;
+    createdAt: number;
+    durationMs: number;
+    error: string | null;
+  } | null;
+  actions: Array<{
+    id: number;
+    kind: string;
+    actor: string | null;
+    detail_json: string | null;
+    at: number;
+  }>;
+}
+
+function ProofOfExploitPanel({ findingId }: { findingId: string }) {
+  const [data, setData] = useState<PoeResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [rescueBusy, setRescueBusy] = useState(false);
+  const [rescueResult, setRescueResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/proofs/${findingId}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        if (j.error) setErr(j.error);
+        else setData(j);
+      })
+      .catch((e) => !cancelled && setErr(String(e?.message ?? e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [findingId]);
+
+  const handleDryRun = async () => {
+    setRescueBusy(true);
+    setRescueResult(null);
+    try {
+      const r = await fetch(`/api/proofs/${findingId}/rescue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "dry-run-fork" }),
+      });
+      const j = await r.json();
+      const ok = j.results?.filter((x: any) => !x.error).length ?? 0;
+      const total = j.results?.length ?? 0;
+      setRescueResult(
+        j.ok
+          ? `Fork dry-run: ${ok}/${total} steps succeeded; rescue is reproducible.`
+          : `Fork dry-run: ${ok}/${total} steps succeeded. ${j.error ?? "see actions log for details."}`,
+      );
+      // refresh actions
+      fetch(`/api/proofs/${findingId}`).then((r) => r.json()).then((j2) => setData(j2));
+    } catch (e: any) {
+      setRescueResult(`error: ${String(e?.message ?? e)}`);
+    } finally {
+      setRescueBusy(false);
+    }
+  };
+
+  if (err) {
+    // Just hide errors silently — PoE data is optional context, not critical.
+    return null;
+  }
+  if (!data) return null;
+  const poe = data.poe;
+  if (!poe) {
+    // No PoE yet. Show a minimal hint so users know the rescue pipeline is
+    // wired but hasn't run for this finding (and why, when we can tell).
+    const eligible =
+      data.finding.ruleId.startsWith("call.") ||
+      data.finding.ruleId.startsWith("control.unguarded_selfdestruct");
+    if (!eligible) return null;
+    return (
+      <Box border="1px solid" borderColor="border.muted" rounded="md" p="3" bg="bg.subtle">
+        <HStack justify="space-between">
+          <Heading size="xs">Proof-of-Exploit</Heading>
+          <Text fontSize="xs" color="fg.muted">no PoE yet — rescue-prove will run after the next simulation pass</Text>
+        </HStack>
+      </Box>
+    );
+  }
+
+  const verdictColor =
+    poe.verdict === "true_positive_drained"
+      ? "red"
+      : poe.verdict === "true_positive_partial"
+        ? "orange"
+        : poe.verdict === "no_rescue_possible"
+          ? "yellow"
+          : poe.verdict === "skipped"
+            ? "gray"
+            : "red";
+
+  return (
+    <Box border="1px solid" borderColor={`${verdictColor}.muted`} rounded="md" p="4" bg={`${verdictColor}.subtle`}>
+      <Stack gap="3">
+        <HStack justify="space-between" wrap="wrap" gap="2">
+          <HStack gap="2">
+            <Heading size="sm">Proof-of-Exploit</Heading>
+            <Badge colorPalette={verdictColor}>{poe.verdict}</Badge>
+            <Badge variant="outline" size="xs">
+              {poe.engine}@{poe.engineVersion}
+            </Badge>
+          </HStack>
+          <HStack gap="3" fontSize="xs" color="fg.muted">
+            <Text>block: {poe.blockNumber ?? "?"}</Text>
+            <Text>attacker: {poe.attackerKind}</Text>
+            <Text>{poe.durationMs} ms</Text>
+          </HStack>
+        </HStack>
+
+        {poe.totalRescuedUsd != null && (
+          <HStack gap="6">
+            <Box>
+              <Text fontSize="xs" color="fg.muted" textTransform="uppercase">Rescuable</Text>
+              <Text fontSize="xl" fontWeight="bold" color={`${verdictColor}.fg`}>
+                {fmtUsd(poe.totalRescuedUsd)}
+              </Text>
+            </Box>
+            <Box>
+              <Text fontSize="xs" color="fg.muted" textTransform="uppercase">Assets</Text>
+              <Text fontSize="xl" fontWeight="bold">{poe.rescuedAssets.length}</Text>
+            </Box>
+            <Box>
+              <Text fontSize="xs" color="fg.muted" textTransform="uppercase">Drain steps</Text>
+              <Text fontSize="xl" fontWeight="bold">
+                {poe.drainPlan.filter((s) => s.success).length}/{poe.drainPlan.length}
+              </Text>
+            </Box>
+          </HStack>
+        )}
+
+        {poe.rescuedAssets.length > 0 && (
+          <Box bg="bg.canvas" rounded="md" p="2">
+            <Text fontSize="xs" color="fg.muted" textTransform="uppercase" mb="1">
+              Rescuable assets
+            </Text>
+            <Stack gap="1">
+              {poe.rescuedAssets.map((a, i) => (
+                <HStack key={i} fontSize="sm" justify="space-between">
+                  <Text fontFamily="mono" fontSize="xs">
+                    {a.symbol} {a.token ? `(${shortHash(a.token)})` : "(native)"}
+                  </Text>
+                  <Text fontFamily="mono" fontSize="xs">
+                    {fmtTokenAmount(a.amountBase, a.decimals)}
+                  </Text>
+                  <Text color="fg.muted" minW="80px" textAlign="right">
+                    {a.usdValue != null ? fmtUsd(a.usdValue) : "—"}
+                  </Text>
+                </HStack>
+              ))}
+            </Stack>
+          </Box>
+        )}
+
+        {poe.notes.length > 0 && (
+          <Stack gap="1">
+            {poe.notes.map((n, i) => (
+              <Text key={i} fontSize="xs" color="fg.muted">
+                • {n}
+              </Text>
+            ))}
+          </Stack>
+        )}
+
+        <HStack gap="2" wrap="wrap">
+          <Button
+            size="xs"
+            colorPalette={verdictColor}
+            variant="outline"
+            onClick={handleDryRun}
+            loading={rescueBusy}
+            disabled={
+              poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial"
+            }
+          >
+            Replay drain on fork (dry-run)
+          </Button>
+          <Button size="xs" variant="ghost" asChild>
+            <a href={`/api/proofs/${findingId}/poe.json`} download>
+              Download PoE JSON
+            </a>
+          </Button>
+          <Text fontSize="xs" color="fg.muted">
+            escrow: <Text as="span" fontFamily="mono">{shortHash(poe.escrowAddress)}</Text>
+          </Text>
+        </HStack>
+
+        {rescueResult && (
+          <Text fontSize="xs" color="fg.muted" fontFamily="mono">
+            {rescueResult}
+          </Text>
+        )}
+
+        {data.actions.length > 0 && (
+          <Box>
+            <Text fontSize="xs" color="fg.muted" textTransform="uppercase" mb="1">
+              Timeline
+            </Text>
+            <Stack gap="1">
+              {data.actions.slice(-10).map((a) => (
+                <Text key={a.id} fontSize="xs" fontFamily="mono" color="fg.muted">
+                  {new Date(a.at).toISOString().replace("T", " ").slice(0, 19)} · {a.kind}
+                  {a.actor ? ` · ${a.actor}` : ""}
+                </Text>
+              ))}
+            </Stack>
+          </Box>
+        )}
+      </Stack>
+    </Box>
   );
 }

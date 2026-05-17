@@ -216,6 +216,15 @@
       "expect": { "status": "not_exploitable", "verdictContains": "tax-token shape" },
       "tags": ["true-negative", "tax-token", "fee-on-transfer", "uniswap-v2", "static-suppressor"],
       "notes": "Second tax-token TN anchor (different name set: _maxTaxSwap, isaBot, addbBot, manualSwap, _maxTxAmount, resERC20, openTrading, removeAllTransferTax). Together with the f9e2cd82 anchor, ensures the suppressor handles the long tail of tax-token name variants, not just one specific template."
+    },
+    {
+      "id": "econ-eth-tax-token-pair-direct-479f9583-tn",
+      "chainId": 1,
+      "address": "0x479f9583ebae8aa115c90b835d103a3214fa97db",
+      "ruleId": "economic.unguarded_amm_action",
+      "expect": { "status": "not_exploitable", "verdictContains": "tax-token shape" },
+      "tags": ["true-negative", "tax-token", "fee-on-transfer", "uniswap-v2", "pair-direct", "static-suppressor-v4"],
+      "notes": "Third tax-token TN anchor — PAIR-DIRECT variant. Bytecode embeds the UniV2 sync() selector (0xfff6cae9) as part of the post-tax pair-resync flow inside _transfer(), and was firing under the pair-direct static-evidence path even though the call is internal-only. Candidate names match the tax-token template (uniswapV2Router, uniswapV2Pair, removeLimits, enableTrading, updateMaxTransaction, updateMaxWallet, updateDevWallet, tokensForLiquidity, tokensForMarketing, limitsInEffect, _isExcludedMaxTransactionAmount, increaseAllowance, isExcludedFromFees). 4 tax-template hits ≥ threshold 2. Dynamic side: 9/24 candidates auth-reverted, 0/24 reached sync — strong agreement with the suppressor. v4 of anvil-fork-economic extends the suppressor to pair-direct + both signature kinds; this anchor ensures the extension stays in place."
     }
   ]
 }

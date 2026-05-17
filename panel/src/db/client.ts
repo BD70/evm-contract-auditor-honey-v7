@@ -199,6 +199,61 @@ function applyMigrations(raw: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_holdings_contract ON contract_token_holdings(chain_id, contract_address, discovered_at);
   `);
+
+  // ── Proof-of-Exploit & rescue pipeline ─────────────────────────────────────
+  //
+  // proofs_of_exploit: one row per (finding_id, attempt). When the rescue-prove
+  // module successfully drains a contract on a fork it emits a PoE artifact
+  // describing exactly which calldata moved which asset to the escrow, plus
+  // the pre/post state snapshots. This is the DEFINITIVE confirmation that a
+  // finding is a true positive — heuristic findings without a PoE row remain
+  // tentative.
+  //
+  // Each PoE is keyed by (finding_id) for the latest attempt, but we keep
+  // older attempts around for audit history (PRIMARY KEY includes attempt_id).
+  // The `rescued_usd` column is denormalised from `artifact_json.rescued.totalUsd`
+  // so we can sort/filter at the SQL layer without rehydrating the blob.
+  //
+  // rescue_actions: append-only log of every rescue interaction (notify-sent,
+  // identity-verified, rescue-confirmed, broadcasted, mined, failed). Lets the
+  // UI render a timeline and lets the TG bot replay context after restart.
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS proofs_of_exploit (
+      attempt_id TEXT PRIMARY KEY,
+      finding_id TEXT NOT NULL,
+      chain_id INTEGER NOT NULL,
+      contract_address TEXT NOT NULL,
+      attacker_kind TEXT,
+      escrow_address TEXT,
+      verdict TEXT NOT NULL,
+      rescued_native_wei TEXT,
+      rescued_tokens_count INTEGER DEFAULT 0,
+      rescued_usd REAL,
+      drain_plan_count INTEGER DEFAULT 0,
+      engine TEXT NOT NULL,
+      engine_version TEXT NOT NULL,
+      block_number INTEGER,
+      duration_ms INTEGER,
+      created_at INTEGER NOT NULL,
+      artifact_json TEXT NOT NULL,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_poe_finding ON proofs_of_exploit(finding_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_poe_chain_addr ON proofs_of_exploit(chain_id, contract_address);
+    CREATE INDEX IF NOT EXISTS idx_poe_verdict ON proofs_of_exploit(verdict, rescued_usd);
+
+    CREATE TABLE IF NOT EXISTS rescue_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      finding_id TEXT NOT NULL,
+      attempt_id TEXT,
+      kind TEXT NOT NULL,
+      actor TEXT,
+      detail_json TEXT,
+      at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rescue_finding ON rescue_actions(finding_id, at);
+    CREATE INDEX IF NOT EXISTS idx_rescue_kind ON rescue_actions(kind, at);
+  `);
 }
 
 function init() {

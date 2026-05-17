@@ -48,6 +48,40 @@ const SIDECAR_ECON_ENABLED = (process.env.SIM_SIDECAR_ECONOMIC ?? "true").toLowe
 const SIDECAR_ECON_RULE = "economic.unguarded_amm_action";
 const SIDECAR_ECON_SOURCE = "sidecar-economic-attack";
 
+// Rescue-prove pass (rescue-prove.ts) runs after a verifier produces a
+// "verified" verdict and attempts an actual drain on the fork. It only
+// makes sense for rule families whose vulnerability has a directly-
+// constructible drain shape (arbitrary-call, selfdestruct). Other classes
+// (economic AMM attack, public initializer takeover) rely on the
+// heuristic verdict for now. Gated by env so operators can disable on
+// resource-constrained boxes.
+const RESCUE_PROVE_ENABLED =
+  String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() !== "false";
+
+function rescueProveEligible(ruleId: string): boolean {
+  if (!RESCUE_PROVE_ENABLED) return false;
+  return ruleId.startsWith("call.") || ruleId.startsWith("control.unguarded_selfdestruct");
+}
+
+async function maybeRunRescueProve(input: {
+  findingId: string;
+  chainId: number;
+  contractAddress: string;
+  ruleId: string;
+  evidence: unknown;
+}): Promise<void> {
+  // Lazy import keeps the worker's cold-start small and avoids pulling the
+  // exposure pipeline into hot paths that don't need it.
+  const { rescueProve } = await import("./rescue-prove");
+  await rescueProve({
+    findingId: input.findingId,
+    chainId: input.chainId,
+    contractAddress: input.contractAddress,
+    ruleId: input.ruleId,
+    evidence: (input.evidence as any) ?? {},
+  });
+}
+
 const POLL_INTERVAL_MS = Number(process.env.SIM_POLL_INTERVAL_MS ?? 15_000);
 const CONCURRENCY = Math.max(1, Number(process.env.SIM_CONCURRENCY ?? 1));
 const BATCH_SIZE = Math.max(1, Number(process.env.SIM_BATCH_SIZE ?? 12));
@@ -539,6 +573,30 @@ class SimWorker {
         });
       } catch (err) {
         console.warn("[sim] economic sidecar failed", err);
+      }
+    }
+
+    // Rescue-prove pass: if the primary verifier concluded the finding is
+    // exploitable, run the rescue-prove module to definitively confirm it
+    // by attempting an actual drain on the fork. This produces a PoE
+    // artifact that the TG bot / rescue broadcaster consume. Best-effort —
+    // never fails the verifier pass.
+    if (
+      result.status === "verified" &&
+      first.contract_address &&
+      first.chain_id != null &&
+      rescueProveEligible(first.rule_id)
+    ) {
+      try {
+        await maybeRunRescueProve({
+          findingId: first.id,
+          chainId: first.chain_id,
+          contractAddress: first.contract_address,
+          ruleId: first.rule_id,
+          evidence: result.evidence,
+        });
+      } catch (err) {
+        console.warn("[sim] rescue-prove failed", err);
       }
     }
   }

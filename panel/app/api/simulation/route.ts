@@ -124,5 +124,35 @@ export async function POST(req: Request) {
     }
   }
 
-  return NextResponse.json({ ...result, sidecar });
+  // Rescue-prove pass: when the primary verifier said "verified" and the
+  // rule family is one we know how to drain (arbitrary-call / selfdestruct),
+  // run the rescue-prove module synchronously so the API response carries
+  // the PoE summary. Best-effort — never fails the simulation result.
+  let poe: { verdict: string; rescuedAssets: number; totalRescuedUsd: number | null; attemptId: string } | null = null;
+  const rescueEligible =
+    result.status === "verified" &&
+    (row.ruleId.startsWith("call.") || row.ruleId.startsWith("control.unguarded_selfdestruct")) &&
+    String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() !== "false";
+  if (rescueEligible) {
+    try {
+      const { rescueProve } = await import("@/src/server/sim/rescue-prove");
+      const artifact = await rescueProve({
+        findingId: findingId,
+        chainId: row.chainId!,
+        contractAddress: row.contractAddress!,
+        ruleId: row.ruleId,
+        evidence: result.evidence,
+      });
+      poe = {
+        verdict: artifact.verdict,
+        rescuedAssets: artifact.rescuedAssets.length,
+        totalRescuedUsd: artifact.totalRescuedUsd,
+        attemptId: artifact.attemptId,
+      };
+    } catch (err) {
+      console.warn("[api/simulation] rescue-prove failed", err);
+    }
+  }
+
+  return NextResponse.json({ ...result, sidecar, poe });
 }

@@ -8,6 +8,7 @@ import { ensurePanelDirs } from "./paths";
 import { ensurePruneSchedule } from "./prune-job";
 import { auditorBinInfo } from "./auditor-bin";
 import { simWorker } from "./sim/worker";
+import { startTgBot, tgBotEnabled } from "./rescue/tg-bot";
 
 type Globals = { __panelBooted?: boolean };
 const g = globalThis as unknown as Globals;
@@ -20,6 +21,9 @@ export function bootOnce() {
     ingestWatcher.startIfNeeded();
     ensurePruneSchedule();
     void simWorker.startIfNeeded().catch((err) => console.warn("[sim] startIfNeeded failed", err));
+    if (tgBotEnabled()) {
+      void startTgBot().catch((err) => console.warn("[tg-bot] start failed", err));
+    }
     const bins = auditorBinInfo();
     for (const { tool, resolved, source } of bins) {
       console.info(`[panel] ${tool} → ${resolved} (${source})`);

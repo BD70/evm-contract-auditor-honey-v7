@@ -277,6 +277,65 @@ export async function startAudit(input: AuditInput): Promise<StartedAudit> {
         } catch (err) {
           console.warn("[audit-service] sidecar pass failed", err);
         }
+
+        // Rescue-prove pass for manual audits. For every verified finding
+        // tagged with this run that rescue-prove can handle (arbitrary-call
+        // / selfdestruct), kick off a drain attempt. Bounded by a generous
+        // overall budget so the manual run still finishes promptly.
+        try {
+          if (
+            String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() !== "false"
+          ) {
+            const RESCUE_BUDGET_MS = Number(process.env.RESCUE_MANUAL_BUDGET_MS ?? 45_000);
+            const verifiedRows = rawDb
+              .prepare(
+                `SELECT id, rule_id, chain_id, contract_address, simulation_evidence_json
+                 FROM findings
+                 WHERE run_id = ? AND simulation_status = 'verified'`,
+              )
+              .all(runId) as Array<{
+                id: string;
+                rule_id: string;
+                chain_id: number | null;
+                contract_address: string | null;
+                simulation_evidence_json: string | null;
+              }>;
+            const eligible = verifiedRows.filter(
+              (r) =>
+                r.rule_id &&
+                r.contract_address &&
+                r.chain_id != null &&
+                (r.rule_id.startsWith("call.") || r.rule_id.startsWith("control.unguarded_selfdestruct")),
+            );
+            if (eligible.length > 0) {
+              const { rescueProve } = await import("./sim/rescue-prove");
+              const start = Date.now();
+              for (const r of eligible) {
+                if (Date.now() - start > RESCUE_BUDGET_MS) break;
+                let evidence: any = {};
+                try {
+                  evidence = r.simulation_evidence_json
+                    ? JSON.parse(r.simulation_evidence_json)
+                    : {};
+                } catch {
+                  evidence = {};
+                }
+                await Promise.race([
+                  rescueProve({
+                    findingId: r.id,
+                    chainId: r.chain_id!,
+                    contractAddress: r.contract_address!,
+                    ruleId: r.rule_id,
+                    evidence,
+                  }),
+                  new Promise((resolve) => setTimeout(resolve, 30_000)),
+                ]).catch(() => null);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("[audit-service] rescue-prove pass failed", err);
+        }
       }
     }
     rawDb
