@@ -42,7 +42,9 @@
     ],
     "flows_all": [],
     "reachable_effect_any": [
-      "asset_transfer"
+      "asset_transfer",
+      "state_write",
+      "delegatecall"
     ],
     "authorized_path_effect_any": [],
     "economic_effect_any": [],
@@ -54,22 +56,20 @@
       "nonReentrant",
       "mutex_lock",
       "reentrancy_guard",
-      "OZ_REENTRANCY_GUARD",
-      "PROXY_FORWARDING_PATTERN",
-      "ERC1967_PROXY",
-      "KNOWN_SAFE_PROXY_PATTERN",
-      "proxy_safe_delegatecall"
+      "OZ_REENTRANCY_GUARD"
     ],
     "downgrade_if_any": [
       "STATICCALL_ONLY",
       "no_state_mutation_after_call",
-      "AUTH_GUARDED",
-      "ADMIN_GUARD",
-      "admin_guarded_function",
+      "PROXY_FORWARDING_PATTERN",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "proxy_safe_delegatecall",
       "TRANSPARENT_PROXY",
       "UUPS_PROXY",
       "BEACON_PROXY",
-      "STRONG_AUTH_GUARD"
+      "STRONG_AUTH_GUARD",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER"
     ],
     "inconclusive_if_any": [
       "ambiguous_guard_slot"

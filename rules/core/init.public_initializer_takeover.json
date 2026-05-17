@@ -96,11 +96,10 @@
       "factory_only_initializer",
       "constructor_only_initialization",
       "already_initialized_revert",
-      "INITIALIZABLE",
       "KNOWN_SAFE_PROXY_PATTERN",
-      "ADMIN_GUARD",
-      "admin_guarded_function",
-      "OZ_OWNABLE2STEP"
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER"
     ],
     "downgrade_if_any": [
       "manual_bootstrap_review",

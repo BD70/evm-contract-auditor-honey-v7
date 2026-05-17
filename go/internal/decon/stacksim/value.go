@@ -4,6 +4,7 @@ package stacksim
 
 import (
 	"fmt"
+	"hash/crc32"
 	"math/big"
 )
 
@@ -36,8 +37,19 @@ func ConstU64(v uint64, off int) Value {
 	return Value{Kind: KindConst, Const: new(big.Int).SetUint64(v), SourceOffset: off, HasOffset: true}
 }
 
+// maxExprLen caps symbolic expression strings to prevent exponential growth.
+// In contracts like Uniswap V3's mulDiv, each non-const binop nests operand
+// strings, doubling length per level. 20-30 chained ops produce multi-GB
+// strings. Truncating to 1KB with a CRC32 hash preserves identity for
+// downstream equality checks while capping per-Value memory.
+const maxExprLen = 1024
+
 // Expr constructs an expression Value with a string description.
 func Expr(desc string, off int) Value {
+	if len(desc) > maxExprLen {
+		h := crc32.ChecksumIEEE([]byte(desc))
+		desc = fmt.Sprintf("<sym:%08x>", h)
+	}
 	return Value{Kind: KindExpr, Expr: desc, SourceOffset: off, HasOffset: true}
 }
 

@@ -278,7 +278,9 @@ export function logRescueAction(args: {
     | "rescue-dry-run"
     | "rescue-broadcasted"
     | "rescue-mined"
-    | "rescue-failed";
+    | "rescue-failed"
+    | "approval-consent-granted"
+    | "approval-consent-rejected";
   actor?: string | null;
   detail?: Record<string, unknown>;
 }): void {

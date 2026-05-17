@@ -9,6 +9,15 @@ import (
 	"github.com/evm-auditor/evm-auditor/internal/decon/disasm"
 )
 
+// capStr truncates oversized annotation/description strings to prevent
+// multi-GB memory usage from deeply nested symbolic expressions.
+func capStr(s string) string {
+	if len(s) > maxExprLen {
+		return s[:maxExprLen-16] + "...<truncated>"
+	}
+	return s
+}
+
 // Simulate mirrors evm_decon.stack_sim.simulate.
 func Simulate(ba blocks.Analysis, _ disasm.Result) *Result {
 	res := &Result{
@@ -87,23 +96,23 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				b, a := pop2(&stack)
 				r := binop(a, b, "+", func(x, y *big.Int) *big.Int { return new(big.Int).Add(x, y) }, true)
 				stack = append(stack, r)
-				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: r.String(), Category: "assign"})
-				tr.StackAnnotations[off] = fmt.Sprintf("%s + %s", a, b)
+				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: capStr(r.String()), Category: "assign"})
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s + %s", a, b))
 			}
 		case op == "SUB":
 			if len(stack) >= 2 {
 				b, a := pop2(&stack)
 				r := binop(a, b, "-", func(x, y *big.Int) *big.Int { return new(big.Int).Sub(x, y) }, true)
 				stack = append(stack, r)
-				tr.StackAnnotations[off] = fmt.Sprintf("%s - %s", a, b)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s - %s", a, b))
 			}
 		case op == "MUL":
 			if len(stack) >= 2 {
 				b, a := pop2(&stack)
 				r := binop(a, b, "*", func(x, y *big.Int) *big.Int { return new(big.Int).Mul(x, y) }, true)
 				stack = append(stack, r)
-				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: fmt.Sprintf("%s * %s", a, b), Category: "assign"})
-				tr.StackAnnotations[off] = fmt.Sprintf("%s * %s", a, b)
+				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: capStr(fmt.Sprintf("%s * %s", a, b)), Category: "assign"})
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s * %s", a, b))
 			}
 		case op == "DIV":
 			if len(stack) >= 2 {
@@ -115,7 +124,7 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 					return new(big.Int).Quo(x, y)
 				}, true)
 				stack = append(stack, r)
-				tr.StackAnnotations[off] = fmt.Sprintf("%s / %s", a, b)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s / %s", a, b))
 			}
 		case op == "MOD":
 			if len(stack) >= 2 {
@@ -136,7 +145,7 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 					return new(big.Int).Exp(x, y, mod)
 				}, false)
 				stack = append(stack, r)
-				tr.StackAnnotations[off] = fmt.Sprintf("%s ** %s", a, b)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s ** %s", a, b))
 			}
 		case op == "ADDMOD":
 			if len(stack) >= 3 {
@@ -159,14 +168,14 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				a, b := pop2Reversed(&stack)
 				r := compare(a, b, "<")
 				stack = append(stack, r)
-				tr.StackAnnotations[off] = fmt.Sprintf("%s < %s", a, b)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s < %s", a, b))
 			}
 		case op == "GT":
 			if len(stack) >= 2 {
 				a, b := pop2Reversed(&stack)
 				r := compare(a, b, ">")
 				stack = append(stack, r)
-				tr.StackAnnotations[off] = fmt.Sprintf("%s > %s", a, b)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s > %s", a, b))
 			}
 		case op == "SLT":
 			if len(stack) >= 2 {
@@ -183,7 +192,7 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				a, b := pop2Reversed(&stack)
 				r := compare(a, b, "==")
 				stack = append(stack, r)
-				tr.StackAnnotations[off] = fmt.Sprintf("%s == %s", a, b)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("%s == %s", a, b))
 			}
 		case op == "ISZERO":
 			if len(stack) >= 1 {
@@ -197,7 +206,7 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				} else {
 					stack = append(stack, Expr(fmt.Sprintf("!%s", a), off))
 				}
-				tr.StackAnnotations[off] = fmt.Sprintf("!%s", a)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("!%s", a))
 			}
 
 		case op == "AND":
@@ -347,8 +356,8 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				val, addr := pop2(&stack)
 				v := val
 				tr.MemoryOps = append(tr.MemoryOps, MemoryOp{OffsetInCode: off, Address: addr, Value: &v, OpType: "write"})
-				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: fmt.Sprintf("memory[%s] = %s", addr, val), Category: "memory"})
-				tr.StackAnnotations[off] = fmt.Sprintf("memory[%s] = %s", addr, val)
+				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: capStr(fmt.Sprintf("memory[%s] = %s", addr, val)), Category: "memory"})
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("memory[%s] = %s", addr, val))
 			}
 		case op == "MSTORE8":
 			if len(stack) >= 2 {
@@ -364,15 +373,15 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				slot := pop1(&stack)
 				stack = append(stack, Expr(fmt.Sprintf("storage[%s]", slot), off))
 				tr.StorageOps = append(tr.StorageOps, StorageOp{OffsetInCode: off, Slot: slot, OpType: "read"})
-				tr.StackAnnotations[off] = fmt.Sprintf("read storage[%s]", slot)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("read storage[%s]", slot))
 			}
 		case op == "SSTORE":
 			if len(stack) >= 2 {
 				val, slot := pop2(&stack)
 				v := val
 				tr.StorageOps = append(tr.StorageOps, StorageOp{OffsetInCode: off, Slot: slot, Value: &v, OpType: "write"})
-				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: fmt.Sprintf("storage[%s] = %s", slot, val), Category: "storage"})
-				tr.StackAnnotations[off] = fmt.Sprintf("storage[%s] = %s", slot, val)
+				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: capStr(fmt.Sprintf("storage[%s] = %s", slot, val)), Category: "storage"})
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("storage[%s] = %s", slot, val))
 			}
 		case op == "TLOAD":
 			if len(stack) >= 1 {
@@ -382,7 +391,7 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 		case op == "TSTORE":
 			if len(stack) >= 2 {
 				val, slot := pop2(&stack)
-				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: fmt.Sprintf("transient[%s] = %s", slot, val), Category: "storage"})
+				tr.Operations = append(tr.Operations, OperationRecord{Offset: off, Description: capStr(fmt.Sprintf("transient[%s] = %s", slot, val)), Category: "storage"})
 			}
 
 		case op == "JUMP":
@@ -411,7 +420,7 @@ func simulateBlock(block blocks.BasicBlock, stack []Value, constants *[]Constant
 				if dest.IsConst() {
 					destStr = fmt.Sprintf("0x%04x", dest.Const.Uint64())
 				}
-				tr.StackAnnotations[off] = fmt.Sprintf("if (%s) goto %s", cond, destStr)
+				tr.StackAnnotations[off] = capStr(fmt.Sprintf("if (%s) goto %s", cond, destStr))
 			}
 		case op == "JUMPDEST":
 			// no-op

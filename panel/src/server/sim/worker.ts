@@ -64,7 +64,8 @@ function rescueProveEligible(ruleId: string): boolean {
     ruleId.startsWith("call.") ||
     ruleId.startsWith("control.unguarded_selfdestruct") ||
     ruleId.startsWith("init.") ||
-    ruleId.startsWith("economic.")
+    ruleId.startsWith("economic.") ||
+    ruleId.startsWith("proxy.")
   );
 }
 

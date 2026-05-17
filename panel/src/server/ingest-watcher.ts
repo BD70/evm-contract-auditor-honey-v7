@@ -7,7 +7,7 @@ import { ingestApiJson, upsertDeployment } from "./findings-store";
 import { rawDb } from "@/src/db/client";
 
 const MAX_INGEST_BYTES = 8 * 1024 * 1024;
-const RECONCILE_INTERVAL_MS = Number(process.env.INGEST_RECONCILE_INTERVAL_MS ?? 5_000);
+const RECONCILE_INTERVAL_MS = Number(process.env.INGEST_RECONCILE_INTERVAL_MS ?? 15_000);
 // Yield to the event loop every N directories scanned so a long sweep over a
 // runner-state tree with thousands of subdirs doesn't starve HTTP handlers.
 const SCAN_YIELD_EVERY = 64;
@@ -36,6 +36,8 @@ class IngestWatcher {
   private running = false;
   /** mtime cache for checkpoint.json so we only re-parse when the file actually changes. */
   private checkpointMtime = new Map<string, number>();
+  /** mtime cache for directories — skip readdir when the dir hasn't changed. */
+  private dirMtime = new Map<string, number>();
 
   /** True iff this checkpoint lives at `<STATE_DIR>/<slug>/checkpoint.json`
    * (= a per-chain runner artifact) and NOT at `<STATE_DIR>/checkpoint.json`
@@ -112,6 +114,28 @@ class IngestWatcher {
     const stack: string[] = [panelPaths.stateDir];
     while (stack.length) {
       const dir = stack.pop()!;
+
+      // Skip directories whose mtime hasn't changed since last scan.
+      // On macOS/Linux, a directory's mtime updates when files are
+      // added/removed inside it, so an unchanged mtime means no new
+      // artifacts. This cuts 55k readdir calls down to only the handful
+      // of dirs that actually received new runner output.
+      let dirStat: fs.Stats;
+      try {
+        dirStat = await fsp.stat(dir);
+      } catch {
+        continue;
+      }
+      const lastMtime = this.dirMtime.get(dir) ?? 0;
+      // Always descend into the top-level stateDir and first two levels
+      // (slug / "artifacts") so we discover new chain dirs; below that,
+      // skip unchanged dirs.
+      const depth = dir.split(path.sep).length - panelPaths.stateDir.split(path.sep).length;
+      if (depth > 2 && dirStat.mtimeMs === lastMtime) {
+        continue;
+      }
+      this.dirMtime.set(dir, dirStat.mtimeMs);
+
       let entries: fs.Dirent[];
       try {
         entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -132,8 +156,6 @@ class IngestWatcher {
         }
         if (!e.isFile() || !full.endsWith(".json")) continue;
         scanned++;
-        // checkpoint.json gets rewritten by the runner every block; always
-        // re-process it. Everything else is processed once.
         if (e.name !== "checkpoint.json" && this.seen.has(full)) continue;
         const handled = await this.handlePath(full);
         if (handled) processed++;
@@ -147,13 +169,20 @@ class IngestWatcher {
 
   private trimSeen() {
     if (this.seen.size <= SEEN_MAX_ENTRIES) return;
-    // Sets retain insertion order; drop oldest entries until we're back under
-    // the target. Cheap O(n) but only runs when we've crossed the cap.
     const drop = this.seen.size - SEEN_TRIM_TO;
     let dropped = 0;
     for (const k of this.seen) {
       if (dropped++ >= drop) break;
       this.seen.delete(k);
+    }
+    // Also trim dirMtime cache to prevent unbounded growth
+    if (this.dirMtime.size > SEEN_MAX_ENTRIES) {
+      const dirDrop = this.dirMtime.size - SEEN_TRIM_TO;
+      let dd = 0;
+      for (const k of this.dirMtime.keys()) {
+        if (dd++ >= dirDrop) break;
+        this.dirMtime.delete(k);
+      }
     }
   }
 

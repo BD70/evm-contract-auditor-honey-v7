@@ -209,6 +209,12 @@ interface Row {
   /** True if owner can call an INTENDED admin function (rescueFunds, withdrawETH, ...);
    *  this is centralisation risk, not an exploit. */
   simulationCentralizationRisk?: boolean;
+  /** PoE (Proof-of-Exploit) verdict from rescue-prove — authoritative drain result */
+  poeVerdict: string | null;
+  /** USD value successfully rescued on fork */
+  poeRescuedUsd: number | null;
+  /** Attacker kind from PoE */
+  poeAttackerKind: string | null;
 }
 
 const SIM_COLORS: Record<string, string> = {
@@ -273,6 +279,8 @@ function ContractAddressCell({
 
 function SimCell({ row }: { row: Row }) {
   const s = row.simulationStatus;
+  const poe = row.poeVerdict;
+
   if (!s) {
     return (
       <Text fontSize="2xs" color="fg.muted">
@@ -280,23 +288,82 @@ function SimCell({ row }: { row: Row }) {
       </Text>
     );
   }
-  // OWNER-ONLY: treat as its own visual badge — it's still verified-exploitable
-  // but only by the owner, so we colour it orange to distinguish from
-  // "anyone can drain this" (solid red) and "false positive" (green).
-  // This is the difference between "the owner can rug" and "anybody can rug".
-  if (s === "verified" && row.simulationAttackerKind === "owner") {
-    const title = [row.simulationVerdict, row.simulationEngine].filter(Boolean).join(" — ");
+
+  // When we have a PoE verdict, it's the authoritative signal.
+  // The simulation says "theoretically exploitable"; PoE says "actually drainable."
+  if (s === "verified" && poe) {
+    const title = [row.simulationVerdict, row.simulationEngine, `PoE: ${poe}`].filter(Boolean).join(" — ");
+
+    if (poe === "true_positive_drained" || poe === "true_positive_partial") {
+      const usd = row.poeRescuedUsd;
+      return (
+        <Badge size="xs" variant="solid" colorPalette="red" title={title}>
+          drainable{usd != null && usd > 0 ? ` $${usd.toFixed(0)}` : ""}
+        </Badge>
+      );
+    }
+    if (poe === "requires_flashloan_helper") {
+      return (
+        <Badge size="xs" variant="solid" colorPalette="blue" title={title}>
+          needs setup
+        </Badge>
+      );
+    }
+    if (poe === "victim_approval_rescue") {
+      return (
+        <Badge size="xs" variant="solid" colorPalette="purple" title={title}>
+          approval rescue
+        </Badge>
+      );
+    }
+    if (poe === "trapped_assets_only") {
+      return (
+        <Badge size="xs" variant="subtle" colorPalette="yellow" title={title}>
+          trapped
+        </Badge>
+      );
+    }
+
+    // no_rescue_possible — distinguish owner-only from genuinely not drainable
+    if (row.simulationAttackerKind === "owner" || row.poeAttackerKind === "owner") {
+      return (
+        <Badge size="xs" variant="subtle" colorPalette="orange" title={title}>
+          admin-only
+        </Badge>
+      );
+    }
+    // Any-caller but PoE couldn't drain — verified vulnerability but not exploitable in practice
     return (
-      <Badge size="xs" variant="solid" colorPalette="orange" title={title}>
-        owner-only
+      <Badge size="xs" variant="subtle" colorPalette="yellow" title={title}>
+        not drainable
       </Badge>
     );
   }
+
+  // Verified by simulation but no PoE yet — show as "unproven"
+  if (s === "verified" && !poe) {
+    if (row.simulationAttackerKind === "owner") {
+      const title = [row.simulationVerdict, row.simulationEngine].filter(Boolean).join(" — ");
+      return (
+        <Badge size="xs" variant="solid" colorPalette="orange" title={title}>
+          admin-only
+        </Badge>
+      );
+    }
+    const title = [row.simulationVerdict, row.simulationEngine].filter(Boolean).join(" — ");
+    return (
+      <Badge size="xs" variant="outline" colorPalette="red" title={title}>
+        unproven
+      </Badge>
+    );
+  }
+
+  // Non-verified statuses
   const color = SIM_COLORS[s] ?? "gray";
   const label = SIM_LABEL[s] ?? s;
   const title = [row.simulationVerdict, row.simulationEngine].filter(Boolean).join(" — ");
   return (
-    <Badge size="xs" variant={s === "verified" ? "solid" : "subtle"} colorPalette={color} title={title}>
+    <Badge size="xs" variant="subtle" colorPalette={color} title={title}>
       {label}
     </Badge>
   );
@@ -408,6 +475,7 @@ export function FindingsTable() {
   const [source, setSource] = useState<string>("");
   const [chainId, setChainId] = useState<string>("");
   const [simFilter, setSimFilter] = useState<string[]>([]);
+  const [hideAdminOnly, setHideAdminOnly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -597,7 +665,7 @@ export function FindingsTable() {
         </HStack>
         <HStack gap="1">
           {[
-            { key: "verified", label: "exploitable", color: "red" },
+            { key: "verified", label: "verified", color: "red" },
             { key: "not_exploitable", label: "FP", color: "green" },
             { key: "inconclusive", label: "?", color: "yellow" },
             { key: "unverified", label: "queued", color: "gray" },
@@ -635,6 +703,15 @@ export function FindingsTable() {
           </NativeSelect.Field>
           <NativeSelect.Indicator />
         </NativeSelect.Root>
+        <Button
+          size="xs"
+          variant={hideAdminOnly ? "solid" : "subtle"}
+          colorPalette="orange"
+          onClick={() => setHideAdminOnly((v) => !v)}
+          title="Hide admin-only / owner-only findings that are not attacker-exploitable"
+        >
+          {hideAdminOnly ? "admin hidden" : "show all"}
+        </Button>
         <HStack gap="2" ml="auto">
           {loading && (
             <Text fontSize="xs" color="fg.muted">
@@ -663,7 +740,7 @@ export function FindingsTable() {
               <Table.ColumnHeader>Title</Table.ColumnHeader>
               <Table.ColumnHeader>Rule</Table.ColumnHeader>
               <Table.ColumnHeader>Contract</Table.ColumnHeader>
-              <Table.ColumnHeader>Verify</Table.ColumnHeader>
+              <Table.ColumnHeader>Verdict</Table.ColumnHeader>
               <Table.ColumnHeader>Exposure</Table.ColumnHeader>
               <Table.ColumnHeader>Chain</Table.ColumnHeader>
               <Table.ColumnHeader>Block</Table.ColumnHeader>
@@ -673,7 +750,12 @@ export function FindingsTable() {
             </Table.Row>
           </Table.Header>
           <Table.Body>
-            {rows.map((r) => {
+            {rows
+              .filter((r) => {
+                if (!hideAdminOnly) return true;
+                return r.simulationAttackerKind !== "owner" && r.poeAttackerKind !== "owner";
+              })
+              .map((r) => {
               const ek = exposureKey(r.chainId, r.contractAddress);
               return (
                 <FindingRow

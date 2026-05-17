@@ -518,14 +518,23 @@ func buildTags(r *Result) {
 	if r.HasUUPS {
 		add("UUPS_PATTERN")
 	}
-	if r.HasERC1967AdminSlot && r.HasProxyForwarding {
-		add("admin_guarded_function", "ADMIN_GUARD")
-	}
+	// NOTE: Previously this emitted "admin_guarded_function" + "ADMIN_GUARD"
+	// whenever the admin slot was present AND proxy forwarding was detected.
+	// That's wrong: the admin slot constant in bytecode doesn't prove the
+	// upgrade path is actually gated by an admin check. It was suppressing
+	// every ERC-1967 proxy rule (both proxy.* and init.*) before it could
+	// fire. Removed. Strong-guard tokens (OZ_OWNABLE2STEP, OZ_ACCESS_CONTROL,
+	// OZ_TIMELOCK_CONTROLLER) still correctly suppress.
 	if r.HasReentrancyGuardConstants {
 		add("REENTRANCY_GUARD", "reentrancy_guard", "mutex_lock", "OZ_REENTRANCY_GUARD")
 	}
 	if r.HasInitializerPattern {
-		add("INITIALIZABLE", "initializer_guard")
+		// Only emit INITIALIZABLE (descriptive). Don't emit "initializer_guard"
+		// because HasInitializerPattern triggers on mere presence of the OZ init
+		// slot constant or 0x60ff — it doesn't prove the initializer is actually
+		// guarded. Emitting the guard tag was suppressing init.* rules on every
+		// Initializable contract, producing 0 findings.
+		add("INITIALIZABLE")
 	}
 	if len(r.ProxySelectorsFound) > 0 {
 		add("PROXY_UPGRADE_SELECTORS")

@@ -4,24 +4,17 @@
 # the binary in the background and SIGKILL it if its RSS exceeds CAP_MB.
 # Exit 137 indicates a memory-cap kill (distinguishable from a clean exit).
 #
-# Sizing rationale (2026-05-17 raise from 2 GB → 8 GB):
-# Empirically the Go auditor needs 4–6 GB to analyse modern DEX contracts
-# (Uniswap V3 pools, Aave pools, Curve metapools, Balancer vaults). At a 2
-# GB cap we were SIGKILLing ~200 audits across the corpus — every one of
-# them on bytecode > ~15 KB with delegatecall surfaces. The proper fix is
-# to make the auditor's symbolic execution backtrack more aggressively
-# (or stream its CFG to disk), but until that's done a higher ceiling
-# eliminates the false-failure noise. macOS hosts here have ≥16 GB
-# physical RAM and the auditor is single-threaded, so 8 GB is well within
-# safe bounds even with the panel + runners + anvil pool all running.
+# Sizing rationale (v11 — reverted from 8 GB back to 2 GB):
+# The root cause of the 4-6 GB peaks was exponential Expr string growth in
+# stacksim.go's binop(). That's now fixed (Expr strings capped at 1KB with
+# CRC32 hash). Legitimate peak RSS should be under 500 MB. Keeping the cap
+# at 2 GB as a generous safety net.
 #
-# Override per-invocation via EVM_AUDIT_MAX_RSS_MB if you want to grind
-# even bigger contracts (e.g. Synthetix v3) — there's no real ceiling
-# until we hit swap.
+# Override per-invocation via EVM_AUDIT_MAX_RSS_MB.
 
 set -u
 
-CAP_MB="${EVM_AUDIT_MAX_RSS_MB:-8192}"
+CAP_MB="${EVM_AUDIT_MAX_RSS_MB:-2048}"
 POLL_MS="${EVM_AUDIT_RSS_POLL_MS:-500}"
 BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 REAL_BIN="${BIN_DIR}/evm-audit-darwin-arm64"

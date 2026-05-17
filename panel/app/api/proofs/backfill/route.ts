@@ -73,6 +73,7 @@ export async function POST(req: Request) {
            OR f.rule_id LIKE 'control.unguarded_selfdestruct%'
            OR f.rule_id LIKE 'init.%'
            OR f.rule_id LIKE 'economic.%'
+           OR f.rule_id LIKE 'proxy.%'
          )
        ORDER BY f.discovered_at DESC`,
     )

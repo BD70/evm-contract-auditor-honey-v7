@@ -148,31 +148,31 @@ export function queryFindings(q: FindingsQuery) {
   const where: string[] = [];
   const params: any[] = [];
   if (q.severity?.length) {
-    where.push(`severity IN (${q.severity.map(() => "?").join(",")})`);
+    where.push(`f.severity IN (${q.severity.map(() => "?").join(",")})`);
     params.push(...q.severity);
   }
   if (q.source) {
-    where.push("source = ?");
+    where.push("f.source = ?");
     params.push(q.source);
   }
   if (q.ruleId) {
-    where.push("rule_id = ?");
+    where.push("f.rule_id = ?");
     params.push(q.ruleId);
   }
   if (q.chainId != null) {
-    where.push("chain_id = ?");
+    where.push("f.chain_id = ?");
     params.push(q.chainId);
   }
   if (q.status) {
-    where.push("status = ?");
+    where.push("f.status = ?");
     params.push(q.status);
   }
   if (q.since != null) {
-    where.push("discovered_at >= ?");
+    where.push("f.discovered_at >= ?");
     params.push(q.since);
   }
   if (q.search) {
-    where.push("(title LIKE ? OR rule_id LIKE ? OR contract_address LIKE ? OR bytecode_hash LIKE ?)");
+    where.push("(f.title LIKE ? OR f.rule_id LIKE ? OR f.contract_address LIKE ? OR f.bytecode_hash LIKE ?)");
     const s = `%${q.search}%`;
     params.push(s, s, s, s);
   }
@@ -180,9 +180,9 @@ export function queryFindings(q: FindingsQuery) {
     const wantsUnverified = q.simStatus.includes("unverified") || q.simStatus.includes("pending");
     const concrete = q.simStatus.filter((s) => s !== "unverified" && s !== "pending");
     const clauses: string[] = [];
-    if (wantsUnverified) clauses.push("simulation_status IS NULL");
+    if (wantsUnverified) clauses.push("f.simulation_status IS NULL");
     if (concrete.length) {
-      clauses.push(`simulation_status IN (${concrete.map(() => "?").join(",")})`);
+      clauses.push(`f.simulation_status IN (${concrete.map(() => "?").join(",")})`);
       params.push(...concrete);
     }
     if (clauses.length) where.push(`(${clauses.join(" OR ")})`);
@@ -192,14 +192,24 @@ export function queryFindings(q: FindingsQuery) {
   const offset = Math.max(0, q.offset ?? 0);
   const rows = rawDb
     .prepare(
-      `SELECT id, run_id as runId, rule_id as ruleId, severity, status, confidence, title, category,
-              bytecode_hash as bytecodeHash, contract_address as contractAddress, chain_id as chainId,
-              block_number as blockNumber, tx_hash as txHash, discovered_at as discoveredAt, source,
-              judged_by as judgedBy, judge_verdict as judgeVerdict,
-              simulation_status as simulationStatus, simulation_verdict as simulationVerdict,
-              simulation_engine as simulationEngine, simulated_at as simulatedAt,
-              simulation_evidence_json as simulationEvidenceJson
-       FROM findings ${clause} ORDER BY discovered_at DESC LIMIT ? OFFSET ?`,
+      `SELECT f.id, f.run_id as runId, f.rule_id as ruleId, f.severity, f.status, f.confidence, f.title, f.category,
+              f.bytecode_hash as bytecodeHash, f.contract_address as contractAddress, f.chain_id as chainId,
+              f.block_number as blockNumber, f.tx_hash as txHash, f.discovered_at as discoveredAt, f.source,
+              f.judged_by as judgedBy, f.judge_verdict as judgeVerdict,
+              f.simulation_status as simulationStatus, f.simulation_verdict as simulationVerdict,
+              f.simulation_engine as simulationEngine, f.simulated_at as simulatedAt,
+              f.simulation_evidence_json as simulationEvidenceJson,
+              poe.verdict as poeVerdict,
+              poe.rescued_usd as poeRescuedUsd,
+              poe.attacker_kind as poeAttackerKind
+       FROM findings f
+       LEFT JOIN (
+         SELECT finding_id, verdict, rescued_usd, attacker_kind,
+                ROW_NUMBER() OVER (PARTITION BY finding_id ORDER BY created_at DESC) as rn
+         FROM proofs_of_exploit
+       ) poe ON poe.finding_id = f.id AND poe.rn = 1
+       ${clause}
+       ORDER BY f.discovered_at DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset) as Array<Record<string, unknown>>;
 
@@ -229,17 +239,26 @@ export function queryFindings(q: FindingsQuery) {
     delete r.simulationEvidenceJson;
   }
 
-  const totalRow = rawDb.prepare(`SELECT COUNT(*) as n FROM findings ${clause}`).get(...params) as { n: number };
+  const totalRow = rawDb.prepare(`SELECT COUNT(*) as n FROM findings f ${clause}`).get(...params) as { n: number };
   return { rows, total: totalRow.n, limit, offset };
 }
 
 export function getFinding(id: string): any | null {
   const row = rawDb.prepare(`SELECT * FROM findings WHERE id = ?`).get(id) as any;
   if (!row) return null;
+  const poe = rawDb
+    .prepare(
+      `SELECT verdict, rescued_usd, attacker_kind FROM proofs_of_exploit
+       WHERE finding_id = ? ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(id) as { verdict: string; rescued_usd: number | null; attacker_kind: string } | undefined;
   return {
     ...row,
     raw: row.raw_json ? JSON.parse(row.raw_json) : null,
     affectedFunctions: row.affected_functions_json ? JSON.parse(row.affected_functions_json) : [],
+    poe_verdict: poe?.verdict ?? null,
+    poe_rescued_usd: poe?.rescued_usd ?? null,
+    poe_attacker_kind: poe?.attacker_kind ?? null,
   };
 }
 
