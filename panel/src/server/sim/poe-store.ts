@@ -70,6 +70,14 @@ export interface PoeDrainStep {
   success: boolean;
   /** When success=false, the revert reason (if any) */
   revertReason?: string | null;
+  /** v2: which executor sent this tx — "attacker" or "owner". When "owner"
+   *  the live broadcaster MUST have the owner's signing key. */
+  executor?: "attacker" | "owner";
+  /** v2: actual sender address on the fork (attacker EOA or owner). */
+  from?: string;
+  /** v2: short tag describing the strategy that produced this step
+   *  (e.g. "witnessed-arbitrary-call", "weth-unwrap", "admin-heuristic:rescueERC20"). */
+  strategy?: string;
 }
 
 export interface PoeArtifact {
@@ -117,6 +125,11 @@ export interface PoeArtifact {
   durationMs: number;
   /** Set when verdict='error'; otherwise null. */
   error?: string | null;
+  /** v2: owner address impersonated on the fork (if any). When non-null AND
+   *  at least one drainPlan step has executor="owner", the live broadcaster
+   *  refuses to send those steps unless RESCUE_OWNER_PRIVATE_KEY is also
+   *  configured. */
+  executorOwner?: string | null;
 }
 
 export function newAttemptId(): string {

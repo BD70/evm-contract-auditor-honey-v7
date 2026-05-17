@@ -956,6 +956,9 @@ interface PoeStep {
   gasUsed: string | null;
   success: boolean;
   revertReason: string | null;
+  executor?: "attacker" | "owner";
+  from?: string;
+  strategy?: string;
 }
 interface PoeResp {
   finding: { id: string; ruleId: string; contractAddress: string | null; chainId: number | null };
@@ -965,6 +968,7 @@ interface PoeResp {
     chainId: number;
     contractAddress: string;
     attackerKind: "any" | "owner" | "unknown";
+    executorOwner?: string | null;
     escrowAddress: string;
     verdict:
       | "true_positive_drained"
@@ -1106,10 +1110,24 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             <Badge variant="outline" size="xs">
               {poe.engine}@{poe.engineVersion}
             </Badge>
+            {poe.drainPlan.some((s) => s.executor === "owner") && (
+              <Badge colorPalette="purple" size="xs" title={
+                "At least one drain step needs the owner's signing key. The live broadcaster " +
+                "refuses to send these unless RESCUE_OWNER_PRIVATE_KEY is configured with the " +
+                "correct deployer key — your stated 'deployer authorises rescue' workflow."
+              }>
+                owner-required
+              </Badge>
+            )}
           </HStack>
           <HStack gap="3" fontSize="xs" color="fg.muted">
             <Text>block: {poe.blockNumber ?? "?"}</Text>
             <Text>attacker: {poe.attackerKind}</Text>
+            {poe.executorOwner && (
+              <Text title={poe.executorOwner}>
+                owner: {poe.executorOwner.slice(0, 6)}…{poe.executorOwner.slice(-4)}
+              </Text>
+            )}
             <Text>{poe.durationMs} ms</Text>
           </HStack>
         </HStack>
