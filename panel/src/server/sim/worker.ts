@@ -614,13 +614,16 @@ function hasRelevantExposure(exp: Exposure, surface: ExposureSurface): boolean {
 }
 
 /**
- * Score used to sort findings by AT-RISK exposure DESC. Only the surface
- * relevant to the rule contributes:
- *   - native-only rules score by ETH-equivalent balance
- *   - token-only rules score by non-zero token count (placeholder until
- *     we wire a price feed)
+ * Score used to sort findings by AT-RISK exposure DESC. Surface-aware
+ * USD when the pricing layer has data (post-v3 exposure pipeline);
+ * falls back to coarse native-amount-as-ETH if USD is missing so we
+ * never score an unknown contract as zero just because Coingecko was
+ * slow.
+ *
+ *   - native-only rules score by nativeUsdValue (USD) or nativeWei/1e18 (fallback)
+ *   - token-only rules score by tokensUsdValue (USD) or non-zero token count
  *   - both rules sum the two
- * Findings without exposure data score 0.
+ *   - "none" rules always score 0 (won't be prioritised)
  */
 function relevantExposureValue(
   byKey: Map<string, Exposure> | null | undefined,
@@ -632,18 +635,26 @@ function relevantExposureValue(
   const surface = exposureSurfaceForRule(r.rule_id);
   if (surface === "none") return 0;
   let v = 0;
-  if ((surface === "native" || surface === "both") && exp.nativeWei && exp.nativeWei !== "0") {
-    try {
-      const wei = BigInt(exp.nativeWei);
-      const div = 1_000_000_000_000_000_000n;
-      v += Number((wei * 1000n) / div) / 1000;
-    } catch {
-      v += 1;
+  if (surface === "native" || surface === "both") {
+    if (exp.nativeUsdValue != null) {
+      v += exp.nativeUsdValue;
+    } else if (exp.nativeWei && exp.nativeWei !== "0") {
+      try {
+        const wei = BigInt(exp.nativeWei);
+        const div = 1_000_000_000_000_000_000n;
+        v += Number((wei * 1000n) / div) / 1000;
+      } catch {
+        v += 1;
+      }
     }
   }
-  if ((surface === "token" || surface === "both") && Array.isArray(exp.tokens)) {
-    const nonZero = exp.tokens.filter((t) => t.balance && t.balance !== "0").length;
-    v += nonZero * 0.01;
+  if (surface === "token" || surface === "both") {
+    if (exp.tokensUsdValue != null) {
+      v += exp.tokensUsdValue;
+    } else if (Array.isArray(exp.tokens)) {
+      const nonZero = exp.tokens.filter((t) => t.balance && t.balance !== "0").length;
+      v += nonZero * 0.01;
+    }
   }
   if (!Number.isFinite(v)) v = 0;
   return v;

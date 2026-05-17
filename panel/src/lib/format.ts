@@ -96,6 +96,24 @@ export function fmtNativeAmount(
   return `${fmtTokenAmount(wei, decimals)} ${symbol}`;
 }
 
+/**
+ * Compact USD amount for the exposure UI:
+ *   $42,113   ≥ 1k
+ *   $123.45   ≥ 1
+ *   $0.42     < 1
+ *   $0        zero
+ *   —         null/undefined
+ */
+export function fmtUsd(v: number | null | undefined, opts: { dashOnNull?: boolean } = {}): string {
+  if (v == null || Number.isNaN(v)) return opts.dashOnNull === false ? "" : "—";
+  if (v === 0) return "$0";
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  if (abs >= 1) return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${v.toFixed(2)}`;
+}
+
 export const SEVERITY_COLORS: Record<string, string> = {
   critical: "red",
   high: "orange",

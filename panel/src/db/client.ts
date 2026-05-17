@@ -152,6 +152,53 @@ function applyMigrations(raw: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_simcache_at ON simulation_cache(simulated_at);
   `);
+
+  // ── Exposure-pipeline persistent caches ────────────────────────────────────
+  //
+  // token_metadata: per-(chain, token) symbol/name/decimals. ERC-20 metadata
+  // is immutable for the lifetime of the contract, so this is a PERMANENT
+  // cache — refreshed only if we explicitly invalidate. After warmup, common
+  // tokens (USDC, USDT, WETH, WBNB, ...) cost zero RPC across all contracts.
+  //
+  // token_price_usd: per-(chain, token) USD spot price. TTL is enforced at
+  // read time (see token-pricing.ts); we keep the table small by overwriting
+  // on refresh rather than appending history.
+  //
+  // contract_token_holdings: per-(chain, contract) → set of tokens the
+  // contract currently holds, with balances. TTL also enforced at read time.
+  // This is the key "don't spam logs" cache: a cold contract does ONE
+  // eth_getLogs + N×balanceOf calls; a warm one does zero.
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS token_metadata (
+      chain_id INTEGER NOT NULL,
+      token_address TEXT NOT NULL,
+      symbol TEXT,
+      name TEXT,
+      decimals INTEGER,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (chain_id, token_address)
+    );
+
+    CREATE TABLE IF NOT EXISTS token_price_usd (
+      chain_id INTEGER NOT NULL,
+      token_address TEXT NOT NULL,
+      usd_per_token REAL,
+      source TEXT,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (chain_id, token_address)
+    );
+
+    CREATE TABLE IF NOT EXISTS contract_token_holdings (
+      chain_id INTEGER NOT NULL,
+      contract_address TEXT NOT NULL,
+      token_address TEXT NOT NULL,
+      balance_base TEXT NOT NULL,
+      last_seen_block INTEGER,
+      discovered_at INTEGER NOT NULL,
+      PRIMARY KEY (chain_id, contract_address, token_address)
+    );
+    CREATE INDEX IF NOT EXISTS idx_holdings_contract ON contract_token_holdings(chain_id, contract_address, discovered_at);
+  `);
 }
 
 function init() {

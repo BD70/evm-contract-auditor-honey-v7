@@ -11,10 +11,34 @@ import {
   Text,
 } from "@chakra-ui/react";
 import { useEffect, useState } from "react";
-import { fmtTs, SEVERITY_COLORS, shortHash } from "@/src/lib/format";
+import { fmtTs, fmtNativeAmount, fmtTokenAmount, fmtUsd, SEVERITY_COLORS, shortHash } from "@/src/lib/format";
 import { chainName } from "@/src/lib/chains";
 import { EvidenceRenderer, CounterEvidenceRenderer } from "./EvidenceRenderer";
 import { JsonView } from "./JsonView";
+
+type ExposureSurface = "native" | "token" | "both" | "none";
+const RULE_SURFACE_HINT: Record<string, ExposureSurface> = {
+  "selfdestruct.unguarded": "native",
+  "control.unguarded_selfdestruct": "native",
+  "control.selfdestruct_user_controlled_recipient": "native",
+  "oracle.spot_price_manipulation": "token",
+};
+function surfaceForRule(ruleId: string | null | undefined): ExposureSurface {
+  if (!ruleId) return "both";
+  return RULE_SURFACE_HINT[ruleId] ?? "both";
+}
+const SURFACE_LABEL: Record<ExposureSurface, string> = {
+  native: "Native only",
+  token: "ERC-20 tokens only",
+  both: "Native + ERC-20 tokens",
+  none: "No on-chain assets at risk",
+};
+const SURFACE_COLOR: Record<ExposureSurface, string> = {
+  native: "blue",
+  token: "purple",
+  both: "orange",
+  none: "gray",
+};
 
 interface Finding {
   id: string;
@@ -222,6 +246,10 @@ export function FindingDetail({ id }: { id: string }) {
         </HStack>
       </Box>
 
+      {f.contract_address && f.chain_id != null && (
+        <ExposurePanel chainId={f.chain_id} address={f.contract_address} surface={surfaceForRule(f.rule_id)} />
+      )}
+
       <Tabs.Root defaultValue="summary" variant="line">
         <Tabs.List>
           <Tabs.Trigger value="summary">Summary</Tabs.Trigger>
@@ -287,6 +315,217 @@ function asArray(v: any): any[] {
   if (Array.isArray(v)) return v;
   if (v == null) return [];
   return [v];
+}
+
+interface ExposureToken {
+  address: string; symbol: string; name: string; decimals: number;
+  balance: string; usdPerToken?: number | null; usdValue?: number | null;
+}
+interface ExposureResp {
+  chainId: number; address: string;
+  nativeWei: string; nativeSymbol: string; nativeDecimals: number;
+  tokens: ExposureToken[];
+  nativeUsdPerToken?: number | null;
+  nativeUsdValue?: number | null;
+  tokensUsdValue?: number | null;
+  totalUsdValue?: number | null;
+  tokenSource?: "qn-add-on" | "log-scan" | "log-scan-cache" | "none";
+  tokenScanUnsupported?: boolean;
+  dustTokensFiltered?: number;
+  error?: string;
+}
+
+/**
+ * ExposurePanel — surface-aware "Balance vs True Exposure vs At Risk" panel.
+ *
+ * Renders three numbers prominently:
+ *   - Total Balance      (everything the contract holds, ETH + ERC-20 USD)
+ *   - At Risk For This Rule (subset filtered by the rule's surface)
+ *   - Out-of-Scope       (the difference, shown dimmed for context)
+ *
+ * Then a row-per-asset breakdown with each row colored / opacity-coded by
+ * whether it is in-scope for the rule. This is what replaces the hover-only
+ * UX from earlier: no mouse-over needed to understand what's at risk.
+ */
+function ExposurePanel({ chainId, address, surface }: { chainId: number; address: string; surface: ExposureSurface }) {
+  const [exp, setExp] = useState<ExposureResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/exposure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [{ chainId, address }] }),
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const key = `${chainId}:${address.toLowerCase()}`;
+        setExp(j?.exposures?.[key] ?? null);
+      })
+      .catch((e) => { if (!cancelled) setErr(String(e?.message ?? e)); });
+    return () => { cancelled = true; };
+  }, [chainId, address]);
+
+  if (err) {
+    return (
+      <Box bg="bg.subtle" p="3" rounded="md" border="1px solid" borderColor="border">
+        <Text fontSize="xs" color="fg.muted">Exposure lookup failed: {err}</Text>
+      </Box>
+    );
+  }
+  if (!exp) {
+    return (
+      <Box bg="bg.subtle" p="3" rounded="md" border="1px solid" borderColor="border">
+        <Text fontSize="xs" color="fg.muted">Loading exposure…</Text>
+      </Box>
+    );
+  }
+
+  const nativeRelevant = surface === "native" || surface === "both";
+  const tokenRelevant = surface === "token" || surface === "both";
+  const nativeUsd = exp.nativeUsdValue ?? null;
+  const tokensUsd = exp.tokensUsdValue ?? null;
+  const totalUsd = exp.totalUsdValue ?? null;
+
+  const atRiskUsd = (() => {
+    let v = 0; let any = false;
+    if (nativeRelevant && nativeUsd != null) { v += nativeUsd; any = true; }
+    if (tokenRelevant && tokensUsd != null) { v += tokensUsd; any = true; }
+    return any ? v : null;
+  })();
+  const outOfScopeUsd = (() => {
+    if (totalUsd == null || atRiskUsd == null) return null;
+    return Math.max(0, totalUsd - atRiskUsd);
+  })();
+
+  const tokens = exp.tokens ?? [];
+  const sourceLabel =
+    exp.tokenSource === "qn-add-on" ? "QuickNode token API" :
+    exp.tokenSource === "log-scan" ? "log scan (fresh)" :
+    exp.tokenSource === "log-scan-cache" ? "log scan (cached, ≤30 min)" :
+    "native only";
+
+  return (
+    <Box bg="bg.subtle" p="4" rounded="md" border="1px solid" borderColor="border">
+      <HStack justify="space-between" align="start" mb="3" wrap="wrap" gap="2">
+        <Stack gap="0">
+          <Text fontSize="xs" color="fg.muted" textTransform="uppercase" letterSpacing="wide">On-chain exposure</Text>
+          <Heading size="sm">Balance vs At-Risk for this rule</Heading>
+        </Stack>
+        <HStack gap="2">
+          <Badge colorPalette={SURFACE_COLOR[surface]} variant="subtle" size="sm" title="What this rule can drain">
+            {SURFACE_LABEL[surface]}
+          </Badge>
+          <Badge variant="outline" size="sm" title={`Source: ${sourceLabel}`}>{sourceLabel}</Badge>
+        </HStack>
+      </HStack>
+
+      <HStack gap="6" align="start" wrap="wrap" mb="4">
+        <Stack gap="0" minW="120px">
+          <Text fontSize="xs" color="fg.muted">Total balance</Text>
+          <Text fontSize="2xl" fontWeight="bold" fontFamily="mono">
+            {totalUsd == null ? "—" : fmtUsd(totalUsd)}
+          </Text>
+          <Text fontSize="2xs" color="fg.muted">
+            {nativeUsd != null ? `native ${fmtUsd(nativeUsd)}` : "native ?"} ·{" "}
+            {tokensUsd != null ? `${tokens.length} tok ${fmtUsd(tokensUsd)}` : `${tokens.length} tok (unpriced)`}
+          </Text>
+        </Stack>
+        <Stack gap="0" minW="120px">
+          <Text fontSize="xs" color={surface === "none" ? "fg.muted" : "red.500"}>At risk · this rule</Text>
+          <Text fontSize="2xl" fontWeight="bold" fontFamily="mono"
+            color={surface === "none" ? "fg.muted" : "red.500"}>
+            {surface === "none" ? "$0" : atRiskUsd == null ? "—" : fmtUsd(atRiskUsd)}
+          </Text>
+          <Text fontSize="2xs" color="fg.muted">{SURFACE_LABEL[surface].toLowerCase()}</Text>
+        </Stack>
+        {outOfScopeUsd != null && outOfScopeUsd > 0 && (
+          <Stack gap="0" minW="120px">
+            <Text fontSize="xs" color="fg.muted">Out of scope</Text>
+            <Text fontSize="2xl" fontWeight="bold" fontFamily="mono" color="fg.muted">
+              {fmtUsd(outOfScopeUsd)}
+            </Text>
+            <Text fontSize="2xs" color="fg.muted">held but not drainable by this rule</Text>
+          </Stack>
+        )}
+      </HStack>
+
+      <Stack gap="1">
+        <Text fontSize="xs" color="fg.muted" mb="1">Holdings ({tokens.length + (exp.nativeWei !== "0" ? 1 : 0)})</Text>
+        {exp.nativeWei !== "0" && (
+          <HoldingRow
+            symbol={exp.nativeSymbol}
+            name={`Native ${exp.nativeSymbol}`}
+            amount={fmtNativeAmount(exp.nativeWei, exp.nativeSymbol, exp.nativeDecimals)}
+            usd={nativeUsd}
+            relevant={nativeRelevant}
+          />
+        )}
+        {tokens.map((t) => (
+          <HoldingRow
+            key={t.address}
+            symbol={t.symbol}
+            name={t.name}
+            address={t.address}
+            amount={fmtTokenAmount(t.balance, t.decimals)}
+            usd={t.usdValue ?? null}
+            unpriced={t.usdValue == null}
+            relevant={tokenRelevant}
+          />
+        ))}
+        {tokens.length === 0 && exp.nativeWei === "0" && (
+          <Text fontSize="sm" color="fg.muted">No on-chain assets held by this contract.</Text>
+        )}
+      </Stack>
+      {exp.dustTokensFiltered && exp.dustTokensFiltered > 0 ? (
+        <Text fontSize="2xs" color="fg.muted" mt="2">
+          {exp.dustTokensFiltered} priced token(s) under the $1.00 dust threshold were hidden.
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
+function HoldingRow({
+  symbol, name, amount, usd, relevant, address, unpriced,
+}: {
+  symbol: string; name: string; amount: string; usd: number | null;
+  relevant: boolean; address?: string; unpriced?: boolean;
+}) {
+  return (
+    <HStack
+      gap="3"
+      p="2"
+      bg={relevant ? "bg" : "transparent"}
+      rounded="sm"
+      borderLeft={relevant ? "2px solid" : "2px solid transparent"}
+      borderLeftColor={relevant ? "red.500" : "transparent"}
+      opacity={relevant ? 1 : 0.55}
+    >
+      <Box minW="60px">
+        <Text fontSize="sm" fontWeight="semibold">{symbol}</Text>
+      </Box>
+      <Box flex="1" minW="0">
+        <Text fontSize="xs" color="fg.muted" title={address}>{name}</Text>
+      </Box>
+      <Text fontSize="sm" fontFamily="mono" whiteSpace="nowrap">{amount}</Text>
+      <Box minW="80px" textAlign="right">
+        {unpriced ? (
+          <Text fontSize="xs" color="fg.muted" title="No USD price available (unknown to CoinGecko)">unpriced</Text>
+        ) : (
+          <Text fontSize="sm" fontFamily="mono" fontWeight="semibold"
+            color={relevant ? "fg" : "fg.muted"}>
+            {fmtUsd(usd)}
+          </Text>
+        )}
+      </Box>
+      <Badge size="xs" variant="subtle" colorPalette={relevant ? "red" : "gray"}
+        title={relevant ? "This asset CAN be drained by the rule" : "Held but not drainable by this rule"}>
+        {relevant ? "at risk" : "out of scope"}
+      </Badge>
+    </HStack>
+  );
 }
 
 function isResolverNoise(s: string): boolean {

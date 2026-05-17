@@ -14,7 +14,7 @@ import {
 } from "@chakra-ui/react";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { fmtAge, fmtNativeAmount, fmtTokenAmount, shortHash, SEVERITY_COLORS } from "@/src/lib/format";
+import { fmtAge, fmtNativeAmount, fmtTokenAmount, fmtUsd, shortHash, SEVERITY_COLORS } from "@/src/lib/format";
 import { CHAINS, chainName } from "@/src/lib/chains";
 
 interface TokenBalance {
@@ -23,6 +23,8 @@ interface TokenBalance {
   name: string;
   decimals: number;
   balance: string;
+  usdPerToken?: number | null;
+  usdValue?: number | null;
 }
 
 interface Exposure {
@@ -34,6 +36,12 @@ interface Exposure {
   tokens: TokenBalance[];
   tokenScanUnsupported?: boolean;
   error?: string;
+  nativeUsdPerToken?: number | null;
+  nativeUsdValue?: number | null;
+  tokensUsdValue?: number | null;
+  totalUsdValue?: number | null;
+  tokenSource?: "qn-add-on" | "log-scan" | "log-scan-cache" | "none";
+  dustTokensFiltered?: number;
 }
 
 function exposureKey(chainId: number | null | undefined, address: string | null | undefined): string | null {
@@ -41,15 +49,37 @@ function exposureKey(chainId: number | null | undefined, address: string | null 
   return `${chainId}:${address.toLowerCase()}`;
 }
 
+/** Sum the USD value at risk given the rule's surface. Surface-aware:
+ *   native → nativeUsdValue
+ *   token  → tokensUsdValue
+ *   both   → both
+ *   none   → 0 */
+function usdAtRiskForSurface(exp: Exposure, surface: "native" | "token" | "both" | "none"): number | null {
+  if (surface === "none") return 0;
+  let v = 0;
+  let any = false;
+  if (surface === "native" || surface === "both") {
+    if (exp.nativeUsdValue != null) { v += exp.nativeUsdValue; any = true; }
+  }
+  if (surface === "token" || surface === "both") {
+    if (exp.tokensUsdValue != null) { v += exp.tokensUsdValue; any = true; }
+  }
+  return any ? v : null;
+}
+
 /**
- * ExposureCell renders only the AT-RISK exposure for the rule's surface.
+ * ExposureCell — surface-aware, $-denominated, no-hover-required.
  *
- * For a `selfdestruct.unguarded` finding the contract's ERC-20 holdings
- * are irrelevant — showing them as "exposure" would mislead the user
- * into thinking those tokens are at risk. We render irrelevant balances
- * de-emphasised (greyed-out with a tooltip explaining why) so the user
- * still gets the full picture but knows what's covered by this rule vs.
- * what's collateral information.
+ * Layout per row:
+ *   ┌──────────────────────────────────────────────────────────────────────┐
+ *   │ AT-RISK $X · [native|token|both badge]                               │
+ *   │ ◦ 0.12 ETH ≈ $260   ◦ 1,200 USDC ≈ $1,200   +3 more                  │
+ *   └──────────────────────────────────────────────────────────────────────┘
+ *
+ * For a `selfdestruct.unguarded` finding the ERC-20s are shown but the
+ * "AT-RISK" total only counts the native portion, and irrelevant rows
+ * are visually de-emphasised — preserving the at-a-glance honesty the
+ * previous tooltip-only design lacked.
  */
 function ExposureCell({
   exp,
@@ -61,76 +91,96 @@ function ExposureCell({
   surface: "native" | "token" | "both" | "none";
 }) {
   if (loading && !exp) {
-    return (
-      <Text fontSize="xs" color="fg.muted">
-        …
-      </Text>
-    );
+    return <Text fontSize="xs" color="fg.muted">…</Text>;
   }
   if (!exp) {
-    return (
-      <Text fontSize="xs" color="fg.muted">
-        —
-      </Text>
-    );
+    return <Text fontSize="xs" color="fg.muted">—</Text>;
   }
   if (exp.error) {
-    return (
-      <Text fontSize="xs" color="fg.muted" title={exp.error}>
-        n/a
-      </Text>
-    );
+    return <Text fontSize="xs" color="fg.muted" title={exp.error}>n/a</Text>;
   }
-  const native = fmtNativeAmount(exp.nativeWei, exp.nativeSymbol, exp.nativeDecimals);
-  const tokens = exp.tokens ?? [];
-  const tokenTip = tokens.length
-    ? tokens
-        .slice(0, 10)
-        .map((t) => `${fmtTokenAmount(t.balance, t.decimals)} ${t.symbol}`)
-        .join("\n") + (tokens.length > 10 ? `\n+${tokens.length - 10} more…` : "")
-    : exp.tokenScanUnsupported
-      ? "Token scan unavailable on this chain's RPC (qn_getWalletTokenBalance add-on not enabled)"
-      : "No ERC-20 tokens with non-zero balance";
+
   const nativeRelevant = surface === "native" || surface === "both";
   const tokenRelevant = surface === "token" || surface === "both";
-  const irrelevantNote = "This rule cannot drain this asset class — informational only";
+  const atRisk = usdAtRiskForSurface(exp, surface);
+  const hasNative = exp.nativeWei && exp.nativeWei !== "0";
+  const tokens = exp.tokens ?? [];
+  const top = tokens.slice(0, 2);
+  const more = Math.max(0, tokens.length - top.length);
+
+  // Surface label badge: makes the rule's at-risk asset class IMPOSSIBLE to miss.
+  const surfaceLabel =
+    surface === "native" ? "native" :
+    surface === "token"  ? "tokens" :
+    surface === "both"   ? "native+tokens" :
+    "none";
+  const surfaceColor =
+    surface === "none" ? "gray" :
+    surface === "native" ? "blue" :
+    surface === "token" ? "purple" :
+    "orange";
+
   return (
-    <HStack gap="1.5" align="baseline">
-      <Text
-        fontSize="xs"
-        fontFamily="mono"
-        whiteSpace="nowrap"
-        color={nativeRelevant ? undefined : "fg.muted"}
-        opacity={nativeRelevant ? 1 : 0.55}
-        title={
-          nativeRelevant
-            ? `Native ${exp.nativeSymbol} at risk for this rule`
-            : `Native ${exp.nativeSymbol} — ${irrelevantNote}`
-        }
-      >
-        {native}
-        {!nativeRelevant && (
-          <Text as="span" fontSize="2xs" color="fg.muted" ml="0.5">
-            (n/a)
+    <Stack gap="0.5" minW="180px">
+      <HStack gap="2" align="center">
+        <Text fontSize="sm" fontFamily="mono" fontWeight="semibold" whiteSpace="nowrap">
+          {atRisk == null ? "—" : fmtUsd(atRisk)}
+        </Text>
+        <Badge size="xs" variant="subtle" colorPalette={surfaceColor} title={`Rule surface: ${surfaceLabel}`}>
+          {surfaceLabel}
+        </Badge>
+        {exp.tokenSource === "log-scan-cache" && (
+          <Badge size="xs" variant="outline" colorPalette="gray" title="Holdings served from the 30-min cache">cached</Badge>
+        )}
+      </HStack>
+      <HStack gap="2" align="center" flexWrap="wrap" rowGap="0.5">
+        {hasNative && (
+          <Text
+            fontSize="2xs"
+            fontFamily="mono"
+            color={nativeRelevant ? "fg" : "fg.muted"}
+            opacity={nativeRelevant ? 1 : 0.55}
+            whiteSpace="nowrap"
+            title={nativeRelevant ? `Native ${exp.nativeSymbol} at risk` : `Native ${exp.nativeSymbol} — informational only for this rule`}
+          >
+            {fmtNativeAmount(exp.nativeWei, exp.nativeSymbol, exp.nativeDecimals)}
+            {exp.nativeUsdValue != null && (
+              <Text as="span" color="fg.muted" ml="1">({fmtUsd(exp.nativeUsdValue)})</Text>
+            )}
           </Text>
         )}
-      </Text>
-      {tokens.length > 0 ? (
-        <Badge
-          size="xs"
-          variant="subtle"
-          colorPalette={tokenRelevant ? "purple" : "gray"}
-          title={tokenRelevant ? tokenTip : `${tokenTip}\n\n${irrelevantNote}`}
-          opacity={tokenRelevant ? 1 : 0.55}
-        >
-          +{tokens.length} tok{!tokenRelevant && " (n/a)"}
-        </Badge>
-      ) : exp.tokenScanUnsupported ? (
-        <Text fontSize="2xs" color="fg.muted" title={tokenTip}>
-          —
+        {top.map((t) => (
+          <Text
+            key={t.address}
+            fontSize="2xs"
+            fontFamily="mono"
+            color={tokenRelevant ? "fg" : "fg.muted"}
+            opacity={tokenRelevant ? 1 : 0.55}
+            whiteSpace="nowrap"
+            title={`${t.name} (${t.address})${t.usdValue != null ? ` — ${fmtUsd(t.usdValue)}` : ""}`}
+          >
+            {fmtTokenAmount(t.balance, t.decimals)} {t.symbol}
+            {t.usdValue != null && (
+              <Text as="span" color="fg.muted" ml="1">({fmtUsd(t.usdValue)})</Text>
+            )}
+          </Text>
+        ))}
+        {more > 0 && (
+          <Badge size="xs" variant="outline" colorPalette={tokenRelevant ? "purple" : "gray"}
+            title={tokens.slice(2, 12).map((t) => `${fmtTokenAmount(t.balance, t.decimals)} ${t.symbol}${t.usdValue != null ? ` (${fmtUsd(t.usdValue)})` : " (unpriced)"}`).join("\n")}>
+            +{more} more
+          </Badge>
+        )}
+        {tokens.length === 0 && !hasNative && (
+          <Text fontSize="2xs" color="fg.muted">no balance</Text>
+        )}
+      </HStack>
+      {exp.dustTokensFiltered && exp.dustTokensFiltered > 0 ? (
+        <Text fontSize="2xs" color="fg.muted" title={`${exp.dustTokensFiltered} priced token(s) below the dust threshold were filtered`}>
+          {exp.dustTokensFiltered} dust filtered
         </Text>
       ) : null}
-    </HStack>
+    </Stack>
   );
 }
 
