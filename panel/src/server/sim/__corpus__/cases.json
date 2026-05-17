@@ -198,6 +198,24 @@
       "expect": { "status": "not_exploitable" },
       "tags": ["true-negative", "economic-attack-relative", "rule-mismatch-anchor", "mt-token"],
       "notes": "INTENTIONAL TN: static analyzer also flagged this rule on the MT token, but the MT bug is a deflationary-burn pair-manipulation, NOT an arbitrary-call. The economic-attack verifier catches it via the pair-direct static path. Anchor ensures we don't loosen the arbitrary-call rule."
+    },
+    {
+      "id": "econ-eth-tax-token-f9e2cd82-tn",
+      "chainId": 1,
+      "address": "0xf9e2cd82041bd8c643831f1e16fab52808136512",
+      "ruleId": "economic.unguarded_amm_action",
+      "expect": { "status": "not_exploitable", "verdictContains": "tax-token shape" },
+      "tags": ["true-negative", "tax-token", "fee-on-transfer", "uniswap-v2", "static-suppressor"],
+      "notes": "INTENTIONAL TN: standard UniV2 fee-on-transfer tax token. Bytecode hardcodes Uniswap V2 Router (0x7a25…488d) and PUSHes swapExactTokensForETHSupportingFeeOnTransferTokens (0x791ac947), BUT the swap call lives inside _transfer() and is only reachable from internal ERC20 paths. The candidate set is dominated by tax-token template names (_maxTaxSwap, _maxTxAmount, _maxWalletSize, _taxSwapThreshold, startunitrade, clearstucketh, notokenlimit, transferDelayEnabled). The tax-token-shape suppressor (TAX_TOKEN_NAME_SIGNATURES) MUST demote this to not_exploitable; without it, every fee-on-transfer meme token on ETH/BSC gets flagged as critical. This anchor protects against the suppressor being weakened or removed."
+    },
+    {
+      "id": "econ-eth-tax-token-1983ceca-tn",
+      "chainId": 1,
+      "address": "0x1983ceca0537f837bda9e48f6e3e199b5e282f5a",
+      "ruleId": "economic.unguarded_amm_action",
+      "expect": { "status": "not_exploitable", "verdictContains": "tax-token shape" },
+      "tags": ["true-negative", "tax-token", "fee-on-transfer", "uniswap-v2", "static-suppressor"],
+      "notes": "Second tax-token TN anchor (different name set: _maxTaxSwap, isaBot, addbBot, manualSwap, _maxTxAmount, resERC20, openTrading, removeAllTransferTax). Together with the f9e2cd82 anchor, ensures the suppressor handles the long tail of tax-token name variants, not just one specific template."
     }
   ]
 }
