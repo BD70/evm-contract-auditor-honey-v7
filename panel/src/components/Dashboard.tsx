@@ -11,7 +11,7 @@ import {
   Stack,
   Text,
 } from "@chakra-ui/react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { LogStream } from "./LogStream";
 import { fmtAge, fmtDuration, shortHash, SEVERITY_COLORS } from "@/src/lib/format";
@@ -45,62 +45,74 @@ export function Dashboard() {
     { slug: string; name: string; enabled: boolean; runner: { status: string } | null }[]
   >([]);
 
+  // Consolidated 7-second poll for chains + runner status + recent findings.
+  // Single AbortController per cycle means a slow response can't outrun the
+  // next tick and overwrite fresher data, and unmount cleanly cancels
+  // everything in flight.
+  const acRef = useRef<AbortController | null>(null);
   useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch("/api/chains")
-        .then((r) => r.json())
-        .then((j) => {
-          if (alive) setChains(j.chains ?? []);
-        })
-        .catch(() => {});
-    load();
-    const t = setInterval(load, 7000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    const fetchAll = async () => {
+    let mounted = true;
+    const tick = async () => {
+      acRef.current?.abort();
+      const ac = new AbortController();
+      acRef.current = ac;
       try {
-        const [s, f] = await Promise.all([
-          fetch("/api/runner/status").then((r) => r.json()),
-          fetch("/api/findings?limit=10").then((r) => r.json()),
+        const [c, s, f] = await Promise.all([
+          fetch("/api/chains", { signal: ac.signal }).then((r) => (r.ok ? r.json() : { chains: [] })),
+          fetch("/api/runner/status", { signal: ac.signal }).then((r) => (r.ok ? r.json() : null)),
+          fetch("/api/findings?limit=10", { signal: ac.signal }).then((r) =>
+            r.ok ? r.json() : { rows: [], severityCounts: {} },
+          ),
         ]);
-        if (!alive) return;
+        if (!mounted || ac.signal.aborted) return;
+        setChains(c.chains ?? []);
         setSnap(s);
         setRecent(f.rows ?? []);
         setSevCounts(f.severityCounts ?? {});
-      } catch {}
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
+      }
     };
-    fetchAll();
-    const t = setInterval(fetchAll, 7000);
+    tick();
+    const t = setInterval(tick, 7000);
     return () => {
-      alive = false;
+      mounted = false;
       clearInterval(t);
+      acRef.current?.abort();
     };
   }, []);
 
+  // Runner state SSE — keeps `snap` fresh between polls.
   useEffect(() => {
     const es = new EventSource("/api/runner/stream");
-    es.addEventListener("state", (e: MessageEvent) => {
-      try { setSnap(JSON.parse(e.data)); } catch {}
-    });
-    return () => es.close();
+    const onState = (e: MessageEvent) => {
+      try {
+        setSnap(JSON.parse(e.data));
+      } catch {}
+    };
+    es.addEventListener("state", onState);
+    return () => {
+      es.removeEventListener("state", onState);
+      es.close();
+    };
   }, []);
 
+  // Findings SSE — prepend each new finding to the recent-list, capped at 10.
+  // No need to throttle here: the slice keeps state bounded and React batches
+  // the renders.
   useEffect(() => {
     const es = new EventSource("/api/findings/stream");
-    es.addEventListener("finding", (e: MessageEvent) => {
+    const onFinding = (e: MessageEvent) => {
       try {
         const evt = JSON.parse(e.data) as FindingRow;
-        setRecent((prev) => [evt, ...prev].slice(0, 10));
+        setRecent((prev) => (prev[0]?.id === evt.id ? prev : [evt, ...prev].slice(0, 10)));
       } catch {}
-    });
-    return () => es.close();
+    };
+    es.addEventListener("finding", onFinding);
+    return () => {
+      es.removeEventListener("finding", onFinding);
+      es.close();
+    };
   }, []);
 
   const audits = snap?.metrics?.evm_runner_audits_total ?? 0;
@@ -286,7 +298,7 @@ export function Dashboard() {
   );
 }
 
-function Card(props: React.ComponentProps<typeof Box>) {
+const Card = memo(function Card(props: React.ComponentProps<typeof Box>) {
   return (
     <Box
       bg="bg.panel"
@@ -297,4 +309,4 @@ function Card(props: React.ComponentProps<typeof Box>) {
       {...props}
     />
   );
-}
+});

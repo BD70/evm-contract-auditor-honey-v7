@@ -124,6 +124,7 @@ export async function notifyPoe(args: {
     `  /poe \`${args.findingId}\``,
     `  /timeline \`${args.findingId}\``,
     `  /rescue \`${args.findingId}\`  (dry-run by default)`,
+    `  /forcerescue \`${args.findingId}\` [auth] [steps,...]  — bypass verdict gate, pick steps`,
   ];
   return await tgSendMessage(TG_CHAT_ID, lines.join("\n"));
 }
@@ -271,10 +272,30 @@ async function handleUpdate(u: any): Promise<void> {
         return `${ts}  ${r.kind}${r.actor ? `  (${r.actor})` : ""}`;
       });
       await tgSendMessage(chatId, `*Timeline* \`${id}\`\n\`\`\`\n${lines.join("\n")}\n\`\`\``);
-    } else if (cmd === "/rescue") {
+    } else if (cmd === "/rescue" || cmd === "/forcerescue") {
       const id = parts[1];
       const auth = parts[2] ?? null;
-      if (!id) return void tgSendMessage(chatId, "usage: `/rescue <findingId> [auth_token]`");
+      // v8: /forcerescue <id> [auth] [step1,step2,…]
+      // The third arg, when present, is a comma-separated list of drain-step
+      // indices. Without it, all steps are sent (subject to the broadcaster's
+      // own gates).
+      const stepArg = cmd === "/forcerescue" ? (parts[3] ?? null) : null;
+      const selectedSteps =
+        stepArg != null
+          ? stepArg
+              .split(",")
+              .map((s) => Number(s.trim()))
+              .filter((n) => Number.isInteger(n) && n >= 0)
+          : null;
+      const force = cmd === "/forcerescue";
+      if (!id) {
+        return void tgSendMessage(
+          chatId,
+          cmd === "/forcerescue"
+            ? "usage: `/forcerescue <findingId> [auth_token] [step1,step2,…]`"
+            : "usage: `/rescue <findingId> [auth_token]`",
+        );
+      }
       const poe = loadLatestPoe(id);
       if (!poe) return void tgSendMessage(chatId, `no PoE for finding \`${id}\``);
       const mode = auth ? "live" : "dry-run-fork";
@@ -283,9 +304,15 @@ async function handleUpdate(u: any): Promise<void> {
         attemptId: poe.attemptId,
         kind: "rescue-requested",
         actor: `tg:${sender}`,
-        detail: { mode, viaCommand: cmd },
+        detail: { mode, viaCommand: cmd, force, selectedSteps },
       });
-      const result = await broadcastRescue({ poe, mode, authToken: auth });
+      const result = await broadcastRescue({
+        poe,
+        mode,
+        authToken: auth,
+        force,
+        selectedSteps,
+      });
       const succeeded = result.results.filter((r) => !r.error).length;
       const failed = result.results.filter((r) => r.error).length;
       const txList = result.results
@@ -295,7 +322,10 @@ async function handleUpdate(u: any): Promise<void> {
       await tgSendMessage(
         chatId,
         [
-          `*Rescue ${mode}*  \`${id}\`  →  ok=${result.ok}`,
+          `*Rescue ${mode}${force ? " (FORCED)" : ""}*  \`${id}\`  →  ok=${result.ok}`,
+          selectedSteps && selectedSteps.length > 0
+            ? `selected steps: [${selectedSteps.join(", ")}] of ${poe.drainPlan.length}`
+            : "",
           result.error ? `error: \`${result.error}\`` : "",
           `steps: ${result.results.length}  ok=${succeeded}  failed=${failed}`,
           txList,
@@ -306,7 +336,7 @@ async function handleUpdate(u: any): Promise<void> {
     } else if (cmd === "/help") {
       await tgSendMessage(
         chatId,
-        "/start · /poe <id> · /timeline <id> · /rescue <id> [auth_token]",
+        "/start · /poe <id> · /timeline <id> · /rescue <id> [auth] · /forcerescue <id> [auth] [steps,...]",
       );
     }
   } catch (e: any) {

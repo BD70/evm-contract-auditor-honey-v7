@@ -60,7 +60,12 @@ const RESCUE_PROVE_ENABLED =
 
 function rescueProveEligible(ruleId: string): boolean {
   if (!RESCUE_PROVE_ENABLED) return false;
-  return ruleId.startsWith("call.") || ruleId.startsWith("control.unguarded_selfdestruct");
+  return (
+    ruleId.startsWith("call.") ||
+    ruleId.startsWith("control.unguarded_selfdestruct") ||
+    ruleId.startsWith("init.") ||
+    ruleId.startsWith("economic.")
+  );
 }
 
 async function maybeRunRescueProve(input: {

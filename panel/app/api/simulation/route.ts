@@ -131,7 +131,10 @@ export async function POST(req: Request) {
   let poe: { verdict: string; rescuedAssets: number; totalRescuedUsd: number | null; attemptId: string } | null = null;
   const rescueEligible =
     result.status === "verified" &&
-    (row.ruleId.startsWith("call.") || row.ruleId.startsWith("control.unguarded_selfdestruct")) &&
+    (row.ruleId.startsWith("call.") ||
+      row.ruleId.startsWith("control.unguarded_selfdestruct") ||
+      row.ruleId.startsWith("init.") ||
+      row.ruleId.startsWith("economic.")) &&
     String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() !== "false";
   if (rescueEligible) {
     try {

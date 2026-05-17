@@ -1034,6 +1034,15 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
   const [rescueResult, setRescueResult] = useState<string | null>(null);
   const [confirmLive, setConfirmLive] = useState(false);
   const [authToken, setAuthToken] = useState("");
+  const [reanalyzeBusy, setReanalyzeBusy] = useState(false);
+  // v8: force-rescue + per-step selection.
+  // - `forceMode` is set when the verdict isn't a default-broadcastable one
+  //   AND the operator explicitly opted in via the "Force-rescue" toggle.
+  // - `selectedSteps` is null (== "send all"); otherwise a set of indices.
+  // - `showStepPicker` controls visibility of the per-step checkbox grid.
+  const [forceMode, setForceMode] = useState(false);
+  const [selectedSteps, setSelectedSteps] = useState<Set<number> | null>(null);
+  const [showStepPicker, setShowStepPicker] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1056,12 +1065,41 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
       .then((j) => setData(j))
       .catch(() => null);
 
+  const runReanalyze = async () => {
+    setReanalyzeBusy(true);
+    setRescueResult(null);
+    try {
+      const r = await fetch(`/api/simulation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ findingId }),
+      });
+      const j = await r.json();
+      if (j.error) {
+        setRescueResult(`re-analyze error: ${j.error}`);
+      } else {
+        setRescueResult(
+          `Re-analyzed: ${j.status}${j.verdict ? ` — ${String(j.verdict).slice(0, 240)}` : ""}`,
+        );
+      }
+      await refresh();
+    } catch (e: any) {
+      setRescueResult(`re-analyze error: ${String(e?.message ?? e)}`);
+    } finally {
+      setReanalyzeBusy(false);
+    }
+  };
+
   const runRescue = async (mode: "dry-run-fork" | "dry-run-sign" | "live") => {
     setRescueBusy(mode);
     setRescueResult(null);
     try {
       const body: any = { mode };
       if (mode === "live") body.authToken = authToken;
+      if (forceMode) body.force = true;
+      if (selectedSteps != null) {
+        body.selectedSteps = Array.from(selectedSteps).sort((a, b) => a - b);
+      }
       const r = await fetch(`/api/proofs/${findingId}/rescue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1071,21 +1109,35 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
       if (j.error) {
         setRescueResult(`error: ${j.error}`);
       } else {
-        const ok = j.results?.filter((x: any) => !x.error).length ?? 0;
-        const total = j.results?.length ?? 0;
-        const txList = (j.results ?? [])
-          .filter((s: any) => s.txHash)
-          .map((s: any) => `  ${s.asset.slice(0, 30)} → ${String(s.txHash).slice(0, 18)}…`)
-          .join("\n");
+        const results: any[] = Array.isArray(j.results) ? j.results : [];
+        const broadcast = results.filter((x) => x.txHash);
+        const broadcastOk = broadcast.filter((x) => !x.error);
+        const broadcastFail = broadcast.filter((x) => x.error);
+        const skipped = results.filter((x) => !x.txHash && x.error?.startsWith("skipped"));
         const tag =
           mode === "live"
-            ? "LIVE BROADCAST"
+            ? "LIVE"
             : mode === "dry-run-sign"
-              ? "Signed (not broadcast)"
-              : "Fork dry-run";
+              ? "SIGN-ONLY"
+              : "FORK DRY-RUN";
+        const txList = broadcast
+          .map(
+            (s) =>
+              `  ${s.error ? "✗" : "✓"} ${s.asset.slice(0, 40)} → ${String(s.txHash).slice(0, 18)}…` +
+              (s.error ? `  (${String(s.error).split("\n")[0].slice(0, 60)})` : ""),
+          )
+          .join("\n");
+        const skipList = skipped
+          .slice(0, 6)
+          .map((s) => `  - ${s.asset.slice(0, 40)} (${String(s.error).slice(0, 60)})`)
+          .join("\n");
         setRescueResult(
-          `${tag}: ${ok}/${total} step(s) succeeded.${txList ? "\n" + txList : ""}` +
-            (j.ok ? "" : `\n(some steps failed)`),
+          `${tag}: ${broadcastOk.length} succeeded · ${broadcastFail.length} reverted · ${skipped.length} skipped (pre-flight)\n` +
+            (txList ? `broadcast txs:\n${txList}\n` : "") +
+            (skipList ? `not broadcast (would have reverted):\n${skipList}` : "") +
+            (broadcast.length === 0 && skipped.length > 0
+              ? `\n(all steps refused by fork pre-flight — you paid zero gas)`
+              : ""),
         );
       }
       await refresh();
@@ -1120,6 +1172,12 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
     );
   }
 
+  // Owner-only findings ARE rug-pull risks even when verdict is "no_rescue_possible"
+  // (because auto-rescue can't help). When such a finding has notable exposure,
+  // highlight in orange so the operator sees it's a watch-item, not "ignore".
+  const isOwnerOnlyAtRisk =
+    poe.attackerKind === "owner" &&
+    poe.notes.some((n) => n.toLowerCase().includes("rug-pull risk"));
   const verdictColor =
     poe.verdict === "true_positive_drained"
       ? "red"
@@ -1132,7 +1190,9 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             : poe.verdict === "trapped_assets_only"
               ? "yellow"
               : poe.verdict === "no_rescue_possible"
-                ? "yellow"
+                ? isOwnerOnlyAtRisk
+                  ? "orange"
+                  : "yellow"
                 : poe.verdict === "skipped"
                   ? "gray"
                   : "red";
@@ -1144,6 +1204,11 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
           <HStack gap="2">
             <Heading size="sm">Proof-of-Exploit</Heading>
             <Badge colorPalette={verdictColor}>{poe.verdict}</Badge>
+            {isOwnerOnlyAtRisk && (
+              <Badge colorPalette="orange" variant="solid">
+                rug-pull risk
+              </Badge>
+            )}
             <Badge variant="outline" size="xs">
               {poe.engine}@{poe.engineVersion}
             </Badge>
@@ -1350,6 +1415,93 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
           </Stack>
         )}
 
+        {/* v8: force-rescue toggle. Becomes available when the verdict is
+            NOT a default-broadcastable one AND the drain plan has at least
+            one candidate step. The operator turns this on to override the
+            heuristic and broadcast the (possibly partial) plan anyway —
+            typical for unpriced tokens / precondition-gap surfaces. */}
+        {poe.drainPlan.length > 0 &&
+          poe.verdict !== "true_positive_drained" &&
+          poe.verdict !== "true_positive_partial" && (
+            <Box
+              border="1px solid"
+              borderColor={forceMode ? "orange.muted" : "border.muted"}
+              rounded="md"
+              p="2"
+              bg={forceMode ? "orange.subtle" : "bg.canvas"}
+            >
+              <HStack gap="2" wrap="wrap">
+                <Badge colorPalette={forceMode ? "orange" : "gray"}>
+                  Force-rescue {forceMode ? "ON" : "OFF"}
+                </Badge>
+                <Button
+                  size="xs"
+                  variant={forceMode ? "solid" : "outline"}
+                  colorPalette="orange"
+                  onClick={() => setForceMode((v) => !v)}
+                  title="Bypass verdict gate. Allows broadcasting drain plans for unpriced tokens, precondition-gap surfaces, or anything the heuristic deemed non-actionable. You are responsible for the outcome."
+                >
+                  {forceMode ? "Disable force-rescue" : "Enable force-rescue"}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => setShowStepPicker((v) => !v)}
+                  title="Pick which drain steps to broadcast (default: all)"
+                >
+                  {showStepPicker ? "Hide step picker" : `Pick steps (${selectedSteps?.size ?? poe.drainPlan.length}/${poe.drainPlan.length})`}
+                </Button>
+                {selectedSteps != null && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => setSelectedSteps(null)}
+                    title="Clear step selection (broadcast all steps)"
+                  >
+                    Reset selection
+                  </Button>
+                )}
+              </HStack>
+              <Text fontSize="2xs" color="fg.muted" mt="1">
+                Even when value shows $0.00, unpriced tokens may still be worth rescuing.
+                Force-rescue lets you broadcast anyway; the step picker lets you choose which assets.
+              </Text>
+              {showStepPicker && (
+                <Box mt="2" maxH="240px" overflowY="auto" border="1px solid" borderColor="border.muted" rounded="sm" p="1" bg="bg.canvas">
+                  <Stack gap="0.5">
+                    {poe.drainPlan.map((s) => {
+                      const checked = selectedSteps == null ? true : selectedSteps.has(s.index);
+                      return (
+                        <HStack key={s.index} gap="2" align="start">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const next = new Set(selectedSteps ?? new Set(poe.drainPlan.map((p) => p.index)));
+                              if (e.target.checked) next.add(s.index);
+                              else next.delete(s.index);
+                              setSelectedSteps(next);
+                            }}
+                            style={{ marginTop: 3 }}
+                          />
+                          <Stack gap="0" flex="1" minW="0">
+                            <Text fontSize="xs" fontWeight={s.success ? "semibold" : "normal"}>
+                              #{s.index} · {s.asset}
+                            </Text>
+                            <Text fontSize="2xs" color="fg.muted" fontFamily="mono">
+                              {s.success ? "fork: OK" : `fork: revert (${(s.revertReason ?? "?").slice(0, 80)})`}
+                              {s.strategy ? `  ·  ${s.strategy}` : ""}
+                            </Text>
+                          </Stack>
+                        </HStack>
+                      );
+                    })}
+                  </Stack>
+                </Box>
+              )}
+            </Box>
+          )}
+
         <HStack gap="2" wrap="wrap">
           <Button
             size="xs"
@@ -1359,11 +1511,16 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             loading={rescueBusy === "dry-run-fork"}
             disabled={
               rescueBusy != null ||
-              (poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial")
+              poe.drainPlan.length === 0 ||
+              (!forceMode &&
+                poe.verdict !== "true_positive_drained" &&
+                poe.verdict !== "true_positive_partial" &&
+                poe.verdict !== "requires_flashloan_helper" &&
+                poe.verdict !== "victim_approval_rescue")
             }
             title="Re-run the drain plan on a fresh fork. No real chain interaction."
           >
-            Dry-run on fork
+            Dry-run on fork{forceMode ? " (forced)" : ""}
           </Button>
           <Button
             size="xs"
@@ -1373,11 +1530,14 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             loading={rescueBusy === "dry-run-sign"}
             disabled={
               rescueBusy != null ||
-              (poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial")
+              poe.drainPlan.length === 0 ||
+              (!forceMode &&
+                poe.verdict !== "true_positive_drained" &&
+                poe.verdict !== "true_positive_partial")
             }
             title="Sign each tx locally with RESCUER_PRIVATE_KEY; returns raw payload(s), NO broadcast."
           >
-            Sign only (no broadcast)
+            Sign only (no broadcast){forceMode ? " (forced)" : ""}
           </Button>
           {!confirmLive ? (
             <Button
@@ -1387,11 +1547,16 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
               onClick={() => setConfirmLive(true)}
               disabled={
                 rescueBusy != null ||
-                (poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial")
+                poe.drainPlan.length === 0 ||
+                (!forceMode &&
+                  poe.verdict !== "true_positive_drained" &&
+                  poe.verdict !== "true_positive_partial" &&
+                  poe.verdict !== "requires_flashloan_helper" &&
+                  poe.verdict !== "victim_approval_rescue")
               }
               title="Broadcast the drain plan against mainnet — moves funds to escrow."
             >
-              Rescue (live)
+              Rescue (live){forceMode ? " — FORCED" : ""}
             </Button>
           ) : (
             <HStack
@@ -1444,6 +1609,16 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
               </Button>
             </HStack>
           )}
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={runReanalyze}
+            loading={reanalyzeBusy}
+            disabled={reanalyzeBusy || rescueBusy != null}
+            title="Re-run rescue-prove with the current engine. Use after upgrading rescue-prove or to get a fresh on-fork drain attempt."
+          >
+            Re-analyze
+          </Button>
           <Button size="xs" variant="ghost" asChild>
             <a href={`/api/proofs/${findingId}/poe.json`} download>
               Download PoE JSON
