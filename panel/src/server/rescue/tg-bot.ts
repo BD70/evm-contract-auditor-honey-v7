@@ -35,9 +35,51 @@ const TG_ALLOWED_CHAT_IDS = (process.env.TG_ALLOWED_CHAT_IDS ?? TG_CHAT_ID)
   .map((s) => s.trim())
   .filter(Boolean);
 const TG_POLL_TIMEOUT_S = Number(process.env.TG_POLL_TIMEOUT_S ?? 30);
+// Per-request abort timeout slightly longer than the server-side poll so the
+// connection always closes cleanly from our side (avoids socket leaks).
+const TG_FETCH_TIMEOUT_MS = (TG_POLL_TIMEOUT_S + 10) * 1000;
 
 let started = false;
 let stopFlag = false;
+let lastPollErrorAt = 0;
+let consecutivePollErrors = 0;
+
+/** Errors that are transient by nature for any long-poll loop hitting a
+ *  Cloudflare-fronted API. We log these as one-liners (without stack) and
+ *  treat them as "just retry" rather than "something's wrong". */
+function isTransientNetworkError(err: any): boolean {
+  if (!err) return false;
+  const code = err?.code ?? err?.cause?.code ?? "";
+  const name = err?.name ?? err?.cause?.name ?? "";
+  const msg = String(err?.message ?? err ?? "").toLowerCase();
+  if (
+    code === "EPIPE" ||
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "UND_ERR_SOCKET" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_BODY_TIMEOUT" ||
+    name === "AbortError"
+  ) {
+    return true;
+  }
+  return (
+    msg.includes("fetch failed") ||
+    msg.includes("socket hang up") ||
+    msg.includes("other side closed") ||
+    msg.includes("network socket disconnected")
+  );
+}
+
+/** Exponential backoff with jitter, capped at 60s. Reset by any successful
+ *  poll. */
+function backoffMsFor(attempt: number): number {
+  const base = Math.min(60_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+  return Math.round(base * (0.75 + Math.random() * 0.5));
+}
 
 export function tgBotEnabled(): boolean {
   return !!TG_BOT_TOKEN;
@@ -88,16 +130,27 @@ export async function notifyPoe(args: {
 
 async function tgSendMessage(chatId: string, text: string): Promise<boolean> {
   if (!tgBotEnabled()) return false;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 15_000);
   try {
     const r = await fetch(`${TG_API_BASE}${TG_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true }),
+      signal: ac.signal,
     });
     return r.ok;
   } catch (e) {
-    console.warn("[tg-bot] sendMessage failed", e);
+    if (isTransientNetworkError(e)) {
+      console.warn(
+        `[tg-bot] sendMessage transient error (${(e as any)?.code ?? (e as any)?.cause?.code ?? (e as any)?.name ?? "?"}) — chat will retry on next poll`,
+      );
+    } else {
+      console.warn("[tg-bot] sendMessage failed", e);
+    }
     return false;
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -106,12 +159,18 @@ async function tgSendMessage(chatId: string, text: string): Promise<boolean> {
 async function pollLoop(): Promise<void> {
   let offset = 0;
   while (!stopFlag) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), TG_FETCH_TIMEOUT_MS);
     try {
       const r = await fetch(
         `${TG_API_BASE}${TG_BOT_TOKEN}/getUpdates?timeout=${TG_POLL_TIMEOUT_S}&offset=${offset}`,
+        { signal: ac.signal },
       );
       if (!r.ok) {
-        await new Promise((res) => setTimeout(res, 5000));
+        // TG sometimes returns 502/503 during their own deploys. Backoff
+        // briefly, don't treat as a hard error.
+        consecutivePollErrors++;
+        await new Promise((res) => setTimeout(res, backoffMsFor(consecutivePollErrors)));
         continue;
       }
       const j = (await r.json()) as any;
@@ -120,9 +179,33 @@ async function pollLoop(): Promise<void> {
         offset = Math.max(offset, (u.update_id ?? 0) + 1);
         await handleUpdate(u).catch((e) => console.warn("[tg-bot] handleUpdate", e));
       }
+      // Successful poll → reset backoff counter.
+      consecutivePollErrors = 0;
     } catch (e) {
-      console.warn("[tg-bot] poll error", e);
-      await new Promise((res) => setTimeout(res, 5000));
+      consecutivePollErrors++;
+      // Throttle log spam: only print a full warning at most once per minute
+      // for transient errors. The EPIPE/ECONNRESET pattern is normal noise
+      // for any long-poll loop against a Cloudflare-fronted API.
+      const now = Date.now();
+      const transient = isTransientNetworkError(e);
+      if (transient) {
+        if (now - lastPollErrorAt > 60_000) {
+          const code =
+            (e as any)?.code ?? (e as any)?.cause?.code ?? (e as any)?.name ?? "?";
+          console.warn(
+            `[tg-bot] poll transient error (${code}); retrying with backoff. ` +
+              `Will only re-log once per minute. errCount=${consecutivePollErrors}`,
+          );
+          lastPollErrorAt = now;
+        }
+      } else {
+        // Unexpected error — log the full thing, but still backoff.
+        console.warn("[tg-bot] poll error", e);
+        lastPollErrorAt = now;
+      }
+      await new Promise((res) => setTimeout(res, backoffMsFor(consecutivePollErrors)));
+    } finally {
+      clearTimeout(t);
     }
   }
 }
