@@ -1,10 +1,13 @@
 // rescue-prove: definitive exploit confirmation via on-fork drain attempt.
 //
-// v2 (this file) widens the v1 coverage substantially:
-//   A. Owner-impersonation drain — when evidence.attackerKind === "owner"
-//      AND RESCUE_IMPERSONATE_OWNER is enabled (default ON for the panel
-//      operator's own use), we drain via anvil_impersonateAccount as the
-//      owner. This closes the "deployer authorises rescue" workflow gap.
+// CORE INVARIANT (v5+): drain is ALWAYS from the attacker EOA. The whole
+// point of "rescue" in this pipeline is "an attacker can drain this
+// contract right now; let's frontrun them and deliver the funds to
+// escrow". If a bug is owner-only, an attacker CANNOT drain — there's
+// nothing to rescue from the attacker side; the funds are as safe as the
+// owner is. We exit early with no_rescue_possible.
+//
+// What the engine does:
 //   C. WETH unwrap pre-step — when the contract holds a canonical wrapped-
 //      native (WETH/WBNB/WMATIC/…) we prepend a forwarder call to
 //      `WETH.withdraw(balance)` so the native lands in the contract before
@@ -13,34 +16,42 @@
 //   D+G. Smarter calldata variants — for each (selector, hitPos) we try
 //      multiple uintFiller candidates (balance, max, half, 0); also try a
 //      `transferFrom(contract, escrow, bal)` template (some tokens accept
-//      this for the contract's own balance via self-allowance) with an
-//      `approve(escrow, max)` prepend that gets squashed by the same
-//      forwarder. For selfdestruct, multi-addrPos search.
+//      this for the contract's own balance via self-allowance). For
+//      selfdestruct, multi-addrPos search.
 //   H. Heuristic admin-name selector discovery — when the evidence has no
 //      witnessed forwarder attempt (e.g. landed via static-evidence
 //      sidecar) we scan the contract bytecode for PUSHed admin-named
 //      selectors (withdraw*/rescue*/sweep*/emergency*/claim*) and try
-//      each one with the obvious arg shape (recipient = escrow).
+//      each one with the obvious arg shape (recipient = escrow). These
+//      only succeed when the function is permissionless — auth checks
+//      revert the call and we move on. Owner-only contracts produce no
+//      successful drains here (correctly).
 //
-// Outcome verdicts remain the same: true_positive_drained |
-// true_positive_partial | no_rescue_possible | skipped | error.
+// Init-takeover case (still attacker-side): phase-1 is `initialize(...)`
+// with the attacker EOA at the takeover slot — anyone can call it, that's
+// the bug. After phase-1, the attacker IS the owner. Phase-2 runs the
+// admin-name heuristic FROM THE ATTACKER EOA which now owns the contract.
+// No impersonation, no third-party key required.
+//
+// Outcome verdicts:
+//   true_positive_drained | true_positive_partial | no_rescue_possible |
+//   trapped_assets_only | victim_approval_rescue | requires_flashloan_helper |
+//   skipped | error
 //
 // Workflow:
 //   1. Forks the target chain at latest block via the shared Anvil pool.
 //   2. Snapshots the contract's NATIVE balance + all discovered ERC-20
 //      holdings (from the exposure pipeline) and the escrow's balances.
-//   3. Constructs a DRAIN PLAN — a sequence of {to, calldata, value, executor}
-//      txs. `executor` is `attacker` for any-caller bugs, `owner` for
-//      owner-impersonation drains.
+//   3. Builds a DRAIN PLAN — a sequence of {to, calldata, value} txs sent
+//      from the attacker EOA.
 //   4. Executes each step on the fork, captures every revert reason, and
 //      snapshots balances after.
-//   5. If the escrow's combined (native + tokens) balance went UP and the
-//      contract's went DOWN, true_positive_drained/_partial. The PoE
-//      records which executor each step needed so the broadcaster knows
-//      whether to use the rescuer key (any-caller) or refuse to broadcast
-//      (owner-required).
+//   5. If escrow gained value and contract lost value, true_positive_*.
+//      Otherwise classifies as trapped_assets_only / victim_approval_rescue
+//      / requires_flashloan_helper / no_rescue_possible based on the
+//      diagnostic context.
 //
-// Engine: rescue-prove@2. Bump engine_version whenever the drain-plan
+// Engine: rescue-prove@5. Bump engine_version whenever the drain-plan
 // builder changes semantics; existing PoEs are NOT auto-invalidated (a PoE
 // is a historical record, not a cache).
 
@@ -48,25 +59,12 @@ import { batchExposure, type Exposure } from "../exposure";
 import { anvilPool, ATTACKER_ADDRESS, rpcRequest, type AnvilInstance } from "./anvil-pool";
 import { buildAbiCalldata, buildCalldataAddressAt, buildCalldataFromSignature, type ArgValue } from "./abi";
 import { sendFromAttacker, snapshot as forkSnapshot } from "./evm";
-import { impersonate } from "./trace";
 import { preflightTokenQuirk, type TokenQuirk } from "./rescue/token-quirks";
 import { detectMulticallSurfaces } from "./rescue/multicall-wrap";
 import { multiArgFanout } from "./rescue/multi-arg-fanout";
-import {
-  scanApprovals,
-  approvalConsentMode,
-  consentVictims,
-  type ApprovalScanResult,
-} from "./rescue/approval-scan";
+import { scanApprovals, type ApprovalScanResult } from "./rescue/approval-scan";
 import { buildInitTakeoverPhase1, probeInitTakeoverIsStillValid } from "./rescue/init-takeover";
 import { shouldUseFlashloanStub, grantFlashCapital } from "./rescue/flashloan";
-import {
-  needsSafeProposal,
-  safeAppDeeplink,
-  safeTxServiceEndpoint,
-  safeInstructionsFor,
-  SAFE_CHAINS,
-} from "./rescue/safe-tx";
 import { probeExtraAdminSlots } from "./rescue/extra-admin-slots";
 import { flashloanReceiverFor } from "./rescue/flashloan-receiver";
 import {
@@ -83,13 +81,7 @@ import {
 import { rawDb } from "@/src/db/client";
 
 export const ENGINE_ID = "rescue-prove";
-export const ENGINE_VERSION = "4";
-
-// v2: owner impersonation gate. Default ON because the panel operator's
-// stated workflow is "deployer authorises us off-chain, then we rescue".
-// Set to false to revert to attacker-only behaviour.
-const IMPERSONATE_OWNER_ENABLED =
-  String(process.env.RESCUE_IMPERSONATE_OWNER ?? "true").toLowerCase() === "true";
+export const ENGINE_VERSION = "5";
 
 // Aave v3 pool addresses per chain — used as the suggested flash-loan
 // source in the flashloanRequirement field. Not exhaustive; missing chains
@@ -196,7 +188,30 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       blockNumber: null,
       error: null,
       startedAt,
-      executorOwner: null,
+    });
+  }
+
+  // v5: owner-only findings are out of scope for auto-rescue. If only the
+  // contract owner can call the vulnerable function, an attacker cannot
+  // drain — so there is nothing to "rescue from the attacker side". The
+  // funds are as safe as the owner is. Skip the fork dance entirely.
+  if ((input.evidence as any)?.attackerKind === "owner") {
+    return finalise({
+      attemptId,
+      input,
+      verdict: "no_rescue_possible",
+      assets: [],
+      plan: [],
+      pre: emptyState(),
+      post: emptyState(),
+      notes: [
+        "owner-only exploit: vulnerable function is gated to the contract owner. " +
+          "An attacker cannot drain, so there is nothing for the auto-rescue pipeline to do. " +
+          "Funds depend on the owner's key custody — out of scope for attacker-side rescue.",
+      ],
+      blockNumber: null,
+      error: null,
+      startedAt,
     });
   }
 
@@ -220,7 +235,6 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         blockNumber: null,
         error: null,
         startedAt,
-        executorOwner: null,
       });
     }
 
@@ -240,7 +254,6 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         blockNumber: null,
         error: null,
         startedAt,
-        executorOwner: null,
       });
     }
     const url = anv.url; // local anvil endpoint, NOT the fork-source rpcUrl
@@ -268,25 +281,10 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         blockNumber,
         error: null,
         startedAt,
-        executorOwner: null,
       });
     }
 
     const ruleFamily = ruleFamilyOf(input.ruleId);
-    // v2-A: when the verifier marked this as owner-only AND impersonation is
-    // enabled, set up the owner account on the fork so owner-executor drain
-    // steps can be sent. We do this BEFORE snapshotting so balances reflect
-    // the funded owner.
-    const ownerAddr: string | null = ownerAddressFromEvidence(input.evidence);
-    if (IMPERSONATE_OWNER_ENABLED && ownerAddr) {
-      try {
-        await impersonate(url, ownerAddr);
-      } catch (e) {
-        planResult.notes.push(
-          `failed to impersonate owner ${ownerAddr}: ${String((e as any)?.message ?? e).slice(0, 100)}`,
-        );
-      }
-    }
 
     // Take pre snapshots of contract & escrow (with TOKENS we actually hold —
     // we read live balances rather than trusting the cached exposure values).
@@ -344,7 +342,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
     const restore = await forkSnapshot(url);
     let plan: PoeDrainStep[] = [];
     try {
-      plan = await executePlan(url, planResult.steps, ownerAddr);
+      plan = await executePlan(url, planResult.steps);
     } finally {
       // We *don't* revert here when the drain succeeded — keeping the
       // post-state lets us re-inspect. But if every step failed we revert
@@ -522,60 +520,11 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       ruleFamily !== "economic"
     ) {
       notes.push(
-        `Rule family '${ruleFamily}' is partially supported by rescue-prove@4 (only via the ` +
+        `Rule family '${ruleFamily}' is partially supported by rescue-prove@5 (only via the ` +
           `admin-name heuristic). Verdict reflects best-effort.`,
       );
     }
 
-    // v4-Safe: if the owner is a Safe multisig AND at least one drain
-    // step needed owner-execution, flip the verdict to requires_safe_signing.
-    // The drainPlan is preserved so the operator can paste it into the
-    // Safe app's Transaction Builder.
-    const safeAddress = needsSafeProposal({
-      evidence: input.evidence,
-      executorOwner: ownerAddr,
-    });
-    let safeRequirement: PoeArtifact["safeRequirement"] = null;
-    if (safeAddress && plan.some((s) => s.executor === "owner")) {
-      const ownerCls = (input.evidence as any)?.ownerClassification ?? null;
-      const safeChain = SAFE_CHAINS[input.chainId];
-      const deeplink = safeAppDeeplink(input.chainId, safeAddress);
-      const endpoint = safeTxServiceEndpoint(input.chainId, safeAddress);
-      const instructions = safeInstructionsFor(
-        input.chainId,
-        safeAddress,
-        plan.map((s) => ({ to: s.to, data: s.data, value: s.value, asset: s.asset })),
-      ).split("\n");
-      safeRequirement = {
-        safeAddress,
-        chainShortName: safeChain?.shortName ?? null,
-        threshold: typeof ownerCls?.threshold === "number" ? ownerCls.threshold : null,
-        ownerCount: typeof ownerCls?.ownerCount === "number" ? ownerCls.ownerCount : null,
-        appDeeplink: deeplink,
-        txServiceEndpoint: endpoint,
-        instructions,
-      };
-      // Only flip verdict if we WERE about to claim true_positive_*. For
-      // already-failed verdicts (no_rescue_possible, trapped, etc) we keep
-      // the original verdict and just attach the safeRequirement metadata.
-      if (verdict === "true_positive_drained" || verdict === "true_positive_partial") {
-        verdict = "requires_safe_signing";
-        notes.push(
-          `v4-Safe: owner is a Safe ${
-            ownerCls?.threshold && ownerCls?.ownerCount
-              ? `${ownerCls.threshold}/${ownerCls.ownerCount} `
-              : ""
-          }multisig at ${safeAddress}. Drain plan was simulated successfully via owner-impersonation ` +
-            `on the fork, but live broadcast requires the multisig signers to PROPOSE and APPROVE ` +
-            `each step through the Safe app (see safeRequirement.appDeeplink).`,
-        );
-      } else {
-        notes.push(
-          `v4-Safe: owner is a Safe multisig (${safeAddress}). Drain steps tagged executor="owner" ` +
-            `would need multisig proposal; see safeRequirement for the deeplink.`,
-        );
-      }
-    }
     // Surface plan-builder notes (weth-unwrap prepend, heuristic candidate
     // count, etc.) into the PoE so the operator sees what strategies were tried.
     if (planResult.ok && Array.isArray((planResult as any).notes)) {
@@ -608,7 +557,6 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       blockNumber,
       error: null,
       startedAt,
-      executorOwner: ownerAddr ?? null,
       approvalVictims: approvalVictimsPoe,
       trappedAssets,
       flashloanRequirement:
@@ -620,14 +568,14 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
               notes: [
                 flashloanReceiverFor(input.chainId)
                   ? `RECEIVER CONFIGURED: ${flashloanReceiverFor(input.chainId)} — the broadcaster ` +
-                    `can route this PoE through the deployed receiver via executeRescue(...) in v5.`
+                    `routes this PoE through the deployed receiver via executeRescue(...) from the ` +
+                    `attacker EOA.`
                   : "No receiver configured. Stub uses anvil_setBalance to grant capital on the fork; " +
                     "for live rescue, deploy contracts/rescue/FlashLoanRescue.sol and register the " +
                     "address in RESCUE_FLASHLOAN_RECEIVER.",
               ],
             }
           : null,
-      safeRequirement,
     });
   } catch (err: any) {
     return finalise({
@@ -642,7 +590,6 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       blockNumber: null,
       error: String(err?.message ?? err).slice(0, 800),
       startedAt,
-      executorOwner: null,
     });
   } finally {
     // No explicit release: anvilPool keeps forks warm by chainId TTL.
@@ -652,17 +599,15 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
 
 // ---- drain-plan builder ----------------------------------------------------
 
-type DrainExecutor = "attacker" | "owner";
+// v5: drain is always sent from the attacker EOA. Owner-only findings are
+// rejected upfront (no_rescue_possible) so we never even build a plan for
+// them. This keeps the executor model honest: rescue = frontrun-the-attacker.
 
 type DrainStep = {
   to: string;
   data: string;
   value: string; // decimal wei
   asset: string;
-  /** Which account should send the tx. "owner" requires impersonation on
-   *  the fork AND requires the live broadcaster to actually have the
-   *  owner's key (so live broadcast of owner-executor steps is gated). */
-  executor: DrainExecutor;
   /** Human-readable "why this step is in the plan", e.g. "weth-unwrap" or
    *  "transferFrom self-allowance fallback" — surfaces in the PoE notes. */
   strategy: string;
@@ -720,7 +665,6 @@ async function buildDrainPlan(
           data: phase1.data,
           value: phase1.value,
           asset: phase1.asset,
-          executor: "attacker",
           strategy: phase1.strategy,
         });
         notes.push(
@@ -871,7 +815,6 @@ function wrapStepsInMulticall(
         data: wrapped,
         value: s.value,
         asset: `${s.asset} via ${surface.signature}`,
-        executor: s.executor,
         strategy: `multicall-wrap+${s.strategy}`,
       });
     } catch {
@@ -892,8 +835,6 @@ function buildMultiArgFanoutSteps(input: RescueProveInput, exposure: Exposure): 
     (a) => a && typeof a === "object" && a.hit === true && typeof a.selector === "string",
   );
   if (hits.length === 0) return [];
-  const isOwnerOnly = (ev as any).attackerKind === "owner";
-  const exec: DrainExecutor = isOwnerOnly ? "owner" : "attacker";
 
   const subs = exposure.tokens
     .filter((t) => t.balance && t.balance !== "0")
@@ -920,7 +861,6 @@ function buildMultiArgFanoutSteps(input: RescueProveInput, exposure: Exposure): 
         data: v.calldata,
         value: "0",
         asset: `multi-arg fanout — ${v.shape}`,
-        executor: exec,
         strategy: `multi-arg-fanout sel=${selector} ${v.shape}`,
       });
     }
@@ -932,16 +872,13 @@ function buildMultiArgFanoutSteps(input: RescueProveInput, exposure: Exposure): 
 // their (selector, argTypes, hitPosition) — the exact shape the verifier
 // proved worked — but with the probe address slot rewritten to point at
 // the rescue target and the bytes payload rewritten to be a transfer to
-// the escrow.
+// the escrow. Always sent from the attacker EOA (owner-only findings are
+// rejected before we get here).
 //
-// v2: per (selector, hitPos) we now emit a small fan-out of candidates per
-// asset, covering multiple shapes that real forwarders accept:
+// Per (selector, hitPos) we emit a small fan-out of candidates per asset:
 //   - transfer(escrow, balance)
-//   - transferFrom(self, escrow, balance) + approve(escrow, max) prepend
-//   - native drain with uintFiller in {balance, max, 0}
-// Each is tagged with executor = "owner" when the verifier marked the bug
-// as owner-only (so the broadcaster knows the rescue requires the owner's
-// key on mainnet).
+//   - transferFrom(self, escrow, balance)
+//   - native drain with uintFiller in {balance, max, half, 0}
 function buildArbitraryCallDrain(
   input: RescueProveInput,
   exposure: Exposure,
@@ -949,8 +886,6 @@ function buildArbitraryCallDrain(
 ): DrainStep[] {
   const ev = input.evidence ?? {};
   const attempts = Array.isArray((ev as any).attempts) ? ((ev as any).attempts as any[]) : [];
-  const isOwnerOnly = (ev as any).attackerKind === "owner";
-  const exec: DrainExecutor = isOwnerOnly ? "owner" : "attacker";
 
   // Prefer attempts that the primary verifier actually witnessed firing.
   const hits = attempts.filter(
@@ -958,15 +893,9 @@ function buildArbitraryCallDrain(
   );
   if (hits.length === 0) {
     notes.push(
-      "no witnessed forwarder attempt in evidence — falling back to v2-H admin-name heuristic only.",
+      "no witnessed forwarder attempt in evidence — falling back to admin-name heuristic only.",
     );
     return [];
-  }
-  if (isOwnerOnly) {
-    notes.push(
-      `verifier marked finding as owner-only; drain steps will be sent from impersonated owner ` +
-        `(${ownerAddressFromEvidence(input.evidence) ?? "owner address missing"}) on the fork.`,
-    );
   }
 
   const steps: DrainStep[] = [];
@@ -980,7 +909,6 @@ function buildArbitraryCallDrain(
       data,
       value,
       asset,
-      executor: exec,
       strategy,
     });
   };
@@ -1065,8 +993,6 @@ function buildSelfdestructDrain(
   const argTypes: string[] = Array.isArray(sd.argTypes) ? sd.argTypes : ["address"];
   const explicitPos: number | undefined =
     typeof sd.hitPosition === "number" ? sd.hitPosition : undefined;
-  const isOwnerOnly = (ev as any).attackerKind === "owner";
-  const exec: DrainExecutor = isOwnerOnly ? "owner" : "attacker";
   if (!selector) {
     notes.push("selfdestruct evidence missing `selector` — can't build drain plan");
     return [];
@@ -1081,7 +1007,6 @@ function buildSelfdestructDrain(
       data: calldata,
       value: "0",
       asset: `native ${exposure.nativeSymbol} (via selfdestruct addrPos=${p})`,
-      executor: exec,
       strategy: `selfdestruct sel=${selector} pos=${p}`,
     });
   }
@@ -1116,8 +1041,6 @@ function buildWethUnwrapSteps(input: RescueProveInput, exposure: Exposure): Drai
     (a) => a && typeof a === "object" && a.hit === true && typeof a.selector === "string",
   );
   if (hits.length === 0) return [];
-  const isOwnerOnly = (ev as any).attackerKind === "owner";
-  const exec: DrainExecutor = isOwnerOnly ? "owner" : "attacker";
 
   const steps: DrainStep[] = [];
   const seen = new Set<string>();
@@ -1136,7 +1059,6 @@ function buildWethUnwrapSteps(input: RescueProveInput, exposure: Exposure): Drai
       data: cd,
       value: "0",
       asset: `WETH.withdraw(${wethBal}) → native`,
-      executor: exec,
       strategy: `weth-unwrap addr=${wethAddr}`,
     });
     if (steps.length >= 2) break; // 2 forwarder shapes is plenty
@@ -1213,20 +1135,20 @@ async function buildAdminHeuristicDrain(
   const lower = code.toLowerCase();
   const present = ADMIN_DRAIN_SIGS.filter((s) => lower.includes(s.selector.slice(2)));
   if (present.length === 0) {
-    notes.push("v2-H admin-name heuristic: no withdraw*/rescue*/sweep* selectors PUSHed in bytecode");
+    notes.push("admin-name heuristic: no withdraw*/rescue*/sweep* selectors PUSHed in bytecode");
     return [];
   }
   notes.push(
-    `v2-H admin-name heuristic: ${present.length} candidate admin selector(s) PUSHed in bytecode ` +
-      `(${present.map((p) => p.signature).slice(0, 6).join(", ")}${present.length > 6 ? ", …" : ""})`,
+    `admin-name heuristic: ${present.length} candidate admin selector(s) PUSHed in bytecode ` +
+      `(${present.map((p) => p.signature).slice(0, 6).join(", ")}${present.length > 6 ? ", …" : ""}). ` +
+      `Each is tried from the attacker EOA; owner-gated ones simply revert and are filtered out.`,
   );
 
-  const ev = input.evidence ?? {};
-  const isOwnerOnly = (ev as any).attackerKind === "owner";
-  // Admin-named functions are almost certainly owner-gated, so default to
-  // owner-executor unless we have positive evidence of permissionlessness.
-  const exec: DrainExecutor = isOwnerOnly || ev == null ? "owner" : "attacker";
-
+  // v5: all admin-name heuristic steps sent from attacker EOA. If the
+  // function is owner-gated the on-fork call simply reverts and we move on.
+  // For init-takeover phase-2 (after the attacker has assumed ownership),
+  // these calls succeed because the attacker IS the owner. No
+  // impersonation, no third-party key required.
   const steps: DrainStep[] = [];
   const seen = new Set<string>();
   const push = (data: string, asset: string, strategy: string) => {
@@ -1238,7 +1160,6 @@ async function buildAdminHeuristicDrain(
       data,
       value: "0",
       asset,
-      executor: exec,
       strategy,
     });
   };
@@ -1404,42 +1325,15 @@ function encodeErc20TransferFrom(from: string, to: string, amount: bigint): stri
   return ERC20_TRANSFER_FROM_SELECTOR + f + t + amt;
 }
 
-/** Pull the owner's address out of finding evidence. Falls back to a few
- *  known key paths the verifier uses. Returns null if no owner is known. */
-function ownerAddressFromEvidence(ev: Record<string, unknown> | undefined): string | null {
-  if (!ev) return null;
-  const e = ev as any;
-  const candidates = [
-    e.attackerAddress,
-    e.ownerAddress,
-    e.owner?.address,
-    e.ownerInfo?.address,
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && /^0x[0-9a-fA-F]{40}$/.test(c)) return c;
-  }
-  return null;
-}
-
 // ---- execution + state-diff -----------------------------------------------
 
-async function executePlan(
-  url: string,
-  steps: DrainStep[],
-  ownerAddr: string | null,
-): Promise<PoeDrainStep[]> {
+async function executePlan(url: string, steps: DrainStep[]): Promise<PoeDrainStep[]> {
   const out: PoeDrainStep[] = [];
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
     const valueHex = s.value === "0" ? "0x0" : "0x" + BigInt(s.value).toString(16);
-    // Decide who sends the tx. "owner" executor requires an owner address
-    // (verifier evidence) AND impersonation to have been enabled.
-    const useOwner = s.executor === "owner" && ownerAddr;
-    const fromAddr = useOwner ? ownerAddr! : ATTACKER_ADDRESS;
     try {
-      const sendResult = useOwner
-        ? await sendFromImpersonated(url, fromAddr, s.to, s.data, valueHex)
-        : await sendFromAttacker(url, s.to, s.data, { value: valueHex });
+      const sendResult = await sendFromAttacker(url, s.to, s.data, { value: valueHex });
       const success = sendResult.receipt?.status === "0x1";
       out.push({
         index: i,
@@ -1452,8 +1346,7 @@ async function executePlan(
         revertReason: success
           ? null
           : `tx ${sendResult.txHash ?? "?"} status=${sendResult.receipt?.status ?? "none"}`,
-        executor: useOwner ? "owner" : "attacker",
-        from: fromAddr,
+        from: ATTACKER_ADDRESS,
         strategy: s.strategy,
       });
     } catch (err: any) {
@@ -1466,44 +1359,12 @@ async function executePlan(
         gasUsed: null,
         success: false,
         revertReason: String(err?.message ?? err).slice(0, 240),
-        executor: useOwner ? "owner" : "attacker",
-        from: fromAddr,
+        from: ATTACKER_ADDRESS,
         strategy: s.strategy,
       });
     }
   }
   return out;
-}
-
-/** Send a tx FROM an impersonated address on the fork. Mirrors
- *  evm.sendFromAttacker but with the configurable `from`. */
-async function sendFromImpersonated(
-  url: string,
-  from: string,
-  to: string,
-  data: string,
-  valueHex: string,
-): Promise<{ txHash: string; receipt: { status?: string; gasUsed?: string; blockNumber?: string } | null }> {
-  const tx = {
-    from,
-    to,
-    data,
-    gas: "0x500000",
-    value: valueHex,
-  };
-  const txHash = await rpcRequest<string>(url, "eth_sendTransaction", [tx]);
-  // tiny inline receipt poll (5s) — matches evm.waitForReceipt behaviour
-  const deadline = Date.now() + 8_000;
-  let wait = 25;
-  while (Date.now() < deadline) {
-    const r = await rpcRequest<any>(url, "eth_getTransactionReceipt", [txHash]).catch(
-      () => null,
-    );
-    if (r && r.transactionHash) return { txHash, receipt: r };
-    await new Promise((res) => setTimeout(res, wait));
-    wait = Math.min(250, wait * 2);
-  }
-  return { txHash, receipt: null };
 }
 
 interface LiveBalances {
@@ -1693,16 +1554,10 @@ interface FinaliseArgs {
   blockNumber: number | null;
   error: string | null;
   startedAt: number;
-  /** Owner address impersonated on the fork (if any). Surfaced in the PoE
-   *  so the broadcaster knows whether ownerKey access is required to
-   *  reproduce the rescue against mainnet. */
-  executorOwner: string | null;
   /** v3 fields */
   approvalVictims?: PoeApprovalVictim[];
   trappedAssets?: PoeTrappedAsset[];
   flashloanRequirement?: PoeArtifact["flashloanRequirement"];
-  /** v4 field */
-  safeRequirement?: PoeArtifact["safeRequirement"];
 }
 
 function finalise(args: FinaliseArgs): PoeArtifact {
@@ -1722,11 +1577,9 @@ function finalise(args: FinaliseArgs): PoeArtifact {
     chainId: args.input.chainId,
     contractAddress: args.input.contractAddress.toLowerCase(),
     attackerKind,
-    executorOwner: args.executorOwner ? args.executorOwner.toLowerCase() : null,
     approvalVictims: args.approvalVictims ?? [],
     trappedAssets: args.trappedAssets ?? [],
     flashloanRequirement: args.flashloanRequirement ?? null,
-    safeRequirement: args.safeRequirement ?? null,
     escrowAddress: DEFAULT_ESCROW.toLowerCase(),
     attackerEoa: ATTACKER_ADDRESS.toLowerCase(),
     verdict: args.verdict,
@@ -1762,8 +1615,7 @@ function finalise(args: FinaliseArgs): PoeArtifact {
     poe.verdict === "true_positive_drained" ||
     poe.verdict === "true_positive_partial" ||
     poe.verdict === "victim_approval_rescue" ||
-    poe.verdict === "requires_flashloan_helper" ||
-    poe.verdict === "requires_safe_signing"
+    poe.verdict === "requires_flashloan_helper"
   ) {
     // Notify asynchronously — never block the prover on a slow webhook.
     void notifyRescueWebhook(poe).catch(() => null);

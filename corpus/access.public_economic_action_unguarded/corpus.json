@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "audit_json": "positive.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "access.public_economic_action_unguarded"
+        ]
+      },
+      "id": "replace_me_positive"
+    }
+  ],
+  "detector_id": "access.public_economic_action_unguarded",
+  "metrics": {
+    "benchmark_metrics": {},
+    "unit_fixture_metrics": {
+      "false_negative_count": 0,
+      "false_positive_count": 0
+    }
+  },
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0"
+}

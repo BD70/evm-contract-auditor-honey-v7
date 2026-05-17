@@ -43,9 +43,8 @@ export type PoeVerdict =
   // v3 additions:
   | "victim_approval_rescue"        // drainable VICTIMS' approvals (not the contract's funds); broadcaster requires per-victim consent
   | "requires_flashloan_helper"     // economic.* exploit drains on fork given granted capital; live rescue needs a deployed flash-loan receiver
-  | "trapped_assets_only"           // contract holds value but every transfer reverts (paused/blacklisted across the board)
-  // v4 additions:
-  | "requires_safe_signing";        // owner is a Safe multisig; rescue must be PROPOSED through the Safe app, not broadcast directly
+  | "trapped_assets_only";          // contract holds value but every transfer reverts (paused/blacklisted across the board)
+// (v5: requires_safe_signing removed — rescue is always attacker-side, owner-only findings emit no_rescue_possible instead.)
 
 export interface PoeAssetRescued {
   /** null = native asset (ETH/BNB/MATIC/…); otherwise lowercased ERC-20 address */
@@ -112,12 +111,12 @@ export interface PoeDrainStep {
   success: boolean;
   /** When success=false, the revert reason (if any) */
   revertReason?: string | null;
-  /** v2: which executor sent this tx — "attacker" or "owner". When "owner"
-   *  the live broadcaster MUST have the owner's signing key. */
-  executor?: "attacker" | "owner";
-  /** v2: actual sender address on the fork (attacker EOA or owner). */
+  /** v5: always the attacker EOA — owner-side rescue was removed in v5
+   *  because owner-only bugs aren't drainable by an attacker, so there's
+   *  nothing to rescue from the attacker side. Kept as an optional field
+   *  for backward-compat with older PoE rows in the DB. */
   from?: string;
-  /** v2: short tag describing the strategy that produced this step
+  /** Short tag describing the strategy that produced this step
    *  (e.g. "witnessed-arbitrary-call", "weth-unwrap", "admin-heuristic:rescueERC20"). */
   strategy?: string;
 }
@@ -167,11 +166,6 @@ export interface PoeArtifact {
   durationMs: number;
   /** Set when verdict='error'; otherwise null. */
   error?: string | null;
-  /** v2: owner address impersonated on the fork (if any). When non-null AND
-   *  at least one drainPlan step has executor="owner", the live broadcaster
-   *  refuses to send those steps unless RESCUE_OWNER_PRIVATE_KEY is also
-   *  configured. */
-  executorOwner?: string | null;
   /** v3: per-victim approval drain table. Populated when approval-surface
    *  scan finds outstanding allowances. The drain plan ALSO includes the
    *  per-victim steps but ONLY for consented victims. */
@@ -186,18 +180,7 @@ export interface PoeArtifact {
     suggestedPool: string | null;
     notes: string[];
   } | null;
-  /** v4: when verdict='requires_safe_signing', metadata for the Safe app
-   *  deeplink + tx-service endpoint so the operator can propose the drain
-   *  steps as multisig transactions. */
-  safeRequirement?: {
-    safeAddress: string;
-    chainShortName: string | null;
-    threshold: number | null;
-    ownerCount: number | null;
-    appDeeplink: string | null;
-    txServiceEndpoint: string | null;
-    instructions: string[];
-  } | null;
+  // (v5: executorOwner + safeRequirement removed — rescue is always attacker-side.)
 }
 
 export function newAttemptId(): string {

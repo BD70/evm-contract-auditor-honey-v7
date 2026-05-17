@@ -30,9 +30,15 @@ bun.lock
 dist/
 build/
 *.egg-info/
+*.tsbuildinfo
+panel/.next/
+panel/dev.db*
+panel/runs.db*
 
 # Agent/cursor local state
 .cursor/
 .claude/
+.agents/
 agent-transcripts/
 terminals/
+mcps/

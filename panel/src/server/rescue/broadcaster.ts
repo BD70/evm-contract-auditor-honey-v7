@@ -126,27 +126,10 @@ export async function broadcastRescue(req: RescueRequest): Promise<RescueBroadca
   }
 
   // ---- verdict gate ---------------------------------------------------------
-  // v3+v4: refuse live broadcast for verdicts that aren't safe to broadcast as-is.
+  // v3+: refuse live broadcast for verdicts that aren't safe to broadcast as-is.
+  // (v5 removed: requires_safe_signing — owner-only findings now produce
+  // no_rescue_possible upstream so we never get here for them.)
   if (req.mode === "live") {
-    if (req.poe.verdict === "requires_safe_signing") {
-      logRescueAction({
-        findingId: req.poe.findingId,
-        attemptId: req.poe.attemptId,
-        kind: "rescue-failed",
-        detail: {
-          reason: "requires-safe-signing",
-          safeRequirement: req.poe.safeRequirement ?? null,
-        },
-      });
-      const sr = req.poe.safeRequirement;
-      return baseResult({
-        error:
-          `live broadcast refused: PoE verdict='requires_safe_signing'. The contract owner is a Safe ` +
-          `multisig (${sr?.safeAddress ?? "?"}, ${sr?.threshold ?? "?"}/${sr?.ownerCount ?? "?"}). ` +
-          `Use the Safe app to propose each drain step to your co-signers:\n` +
-          `  ${sr?.appDeeplink ?? "(no deeplink for this chain)"}`,
-      });
-    }
     if (req.poe.verdict === "requires_flashloan_helper") {
       // v4: if a receiver address is configured for this chain, we CAN
       // broadcast — route the drain plan through receiver.executeRescue(...).
@@ -205,39 +188,9 @@ export async function broadcastRescue(req: RescueRequest): Promise<RescueBroadca
     }
   }
 
-  // ---- owner-executor guard -------------------------------------------------
-  // PoEs produced by rescue-prove@2 mark steps with `executor: "owner"` when
-  // the underlying bug is owner-only and impersonation was used on the fork.
-  // The rescuer EOA can't reproduce those steps on mainnet without the
-  // owner's private key. We refuse "live" mode unless the operator has
-  // wired an owner key (RESCUE_OWNER_PRIVATE_KEY) AND it's the matching
-  // owner address. For dry-run-fork we DO allow it because the fork still
-  // impersonates inside replay; for dry-run-sign we skip those steps with
-  // an explicit error per step instead of failing the entire run.
-  const ownerSteps = (req.poe.drainPlan ?? []).filter((s) => s.executor === "owner");
-  if (req.mode === "live" && ownerSteps.length > 0) {
-    const ownerPk = process.env.RESCUE_OWNER_PRIVATE_KEY ?? "";
-    const ownerOk = ownerPk && /^0x[0-9a-fA-F]{64}$/.test(ownerPk);
-    if (!ownerOk) {
-      logRescueAction({
-        findingId: req.poe.findingId,
-        attemptId: req.poe.attemptId,
-        kind: "rescue-failed",
-        detail: {
-          reason: "owner-required",
-          ownerStepCount: ownerSteps.length,
-          executorOwner: req.poe.executorOwner ?? null,
-        },
-      });
-      return baseResult({
-        error:
-          `live broadcast refused: ${ownerSteps.length} of ${req.poe.drainPlan.length} drain step(s) ` +
-          `require the owner's signing key (RESCUE_OWNER_PRIVATE_KEY not configured). ` +
-          `The owner address recorded in the PoE is ${req.poe.executorOwner ?? "unknown"} — get the ` +
-          `deployer to provide a tx from that address, or supply the key and retry.`,
-      });
-    }
-  }
+  // (v5: owner-executor guard removed — rescue is always sent from the
+  // rescuer EOA. Owner-only findings are rejected upstream by rescue-prove
+  // before any drain plan is built.)
 
   // ---- mode dispatch ----
   if (req.mode === "dry-run-fork") {
@@ -484,48 +437,11 @@ async function liveBroadcast(
   const { client, viemChain } = liveClientsFor(poe.chainId);
   if (!client) return base({ error: "no rpc configured for chain " + poe.chainId });
 
-  // Dual-wallet support: rescuer EOA for attacker-executor steps, owner EOA
-  // for owner-executor steps (set up only if needed and the key is present).
+  // v5: single-wallet broadcast. Every drain step is sent from the rescuer
+  // EOA, which is the same account that simulates the drain on-fork.
   const wallet = createWalletClient({ account, chain: viemChain, transport: http(client.transport.url) });
-  let ownerAccount: ReturnType<typeof privateKeyToAccount> | null = null;
-  let ownerWallet: ReturnType<typeof createWalletClient> | null = null;
-  if (poe.drainPlan.some((s) => s.executor === "owner")) {
-    const ownerPk = process.env.RESCUE_OWNER_PRIVATE_KEY ?? "";
-    if (ownerPk && /^0x[0-9a-fA-F]{64}$/.test(ownerPk)) {
-      ownerAccount = privateKeyToAccount(ownerPk as Hex);
-      ownerWallet = createWalletClient({
-        account: ownerAccount,
-        chain: viemChain,
-        transport: http(client.transport.url),
-      });
-      // Sanity: the configured owner address SHOULD match the executorOwner
-      // recorded by rescue-prove. We don't fail hard (operator may have
-      // rotated keys), but we log a warning into the timeline so any
-      // mismatch is visible.
-      if (
-        poe.executorOwner &&
-        poe.executorOwner.toLowerCase() !== ownerAccount.address.toLowerCase()
-      ) {
-        logRescueAction({
-          findingId: poe.findingId,
-          attemptId: poe.attemptId,
-          kind: "rescue-requested",
-          actor: account.address,
-          detail: {
-            warning: "owner-key-mismatch",
-            poeExecutorOwner: poe.executorOwner,
-            configuredOwner: ownerAccount.address,
-          },
-        });
-      }
-    }
-  }
 
   let nonce = await client.getTransactionCount({ address: account.address, blockTag: "pending" });
-  let ownerNonce =
-    ownerAccount
-      ? await client.getTransactionCount({ address: ownerAccount.address, blockTag: "pending" })
-      : 0;
   const fees = await suggestFees(client);
   const results: RescueBroadcastResult["results"] = [];
   let allOk = true;
@@ -536,31 +452,18 @@ async function liveBroadcast(
     actor: account.address,
     detail: {
       steps: poe.drainPlan.length,
-      ownerSteps: poe.drainPlan.filter((s) => s.executor === "owner").length,
       escrow,
       mode: "live",
     },
   });
   for (const step of poe.drainPlan) {
     try {
-      const useOwner = step.executor === "owner";
-      if (useOwner && !ownerWallet) {
-        // Should be impossible (gated upstream) but be safe.
-        results.push({
-          index: step.index,
-          asset: step.asset,
-          error: "owner-executor step but no owner wallet configured",
-        });
-        allOk = false;
-        continue;
-      }
       const valueWei = step.value === "0" ? 0n : BigInt(step.value);
-      const activeWallet: any = useOwner ? ownerWallet! : wallet;
-      const txHash = await activeWallet.sendTransaction({
+      const txHash = await (wallet as any).sendTransaction({
         to: step.to as Hex,
         data: step.data as Hex,
         value: valueWei,
-        nonce: useOwner ? ownerNonce : nonce,
+        nonce,
         ...fees,
       } as any);
       logRescueAction({
@@ -591,8 +494,7 @@ async function liveBroadcast(
         actor: account.address,
         detail: { txHash, status: receipt?.status ?? "unknown" },
       });
-      if (useOwner) ownerNonce++;
-      else nonce++;
+      nonce++;
     } catch (err: any) {
       allOk = false;
       const msg = String(err?.message ?? err).slice(0, 400);
