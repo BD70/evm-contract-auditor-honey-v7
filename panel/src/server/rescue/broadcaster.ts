@@ -123,6 +123,60 @@ export async function broadcastRescue(req: RescueRequest): Promise<RescueBroadca
     return baseResult({ error: "RESCUER_PRIVATE_KEY required for dry-run-sign mode" });
   }
 
+  // ---- verdict gate ---------------------------------------------------------
+  // v3: refuse live broadcast for verdicts that aren't safe to broadcast as-is.
+  if (req.mode === "live") {
+    if (req.poe.verdict === "requires_flashloan_helper") {
+      logRescueAction({
+        findingId: req.poe.findingId,
+        attemptId: req.poe.attemptId,
+        kind: "rescue-failed",
+        detail: {
+          reason: "requires-flashloan-helper",
+          flashloanRequirement: req.poe.flashloanRequirement ?? null,
+        },
+      });
+      return baseResult({
+        error:
+          `live broadcast refused: this PoE is verdict='requires_flashloan_helper'. The fork stub ` +
+          `granted the attacker capital with anvil_setBalance — that doesn't work on mainnet. ` +
+          `Deploy a flash-loan receiver contract (Aave v3 pool: ` +
+          `${req.poe.flashloanRequirement?.suggestedPool ?? "n/a for this chain"}) and run the drain ` +
+          `plan inside the callback.`,
+      });
+    }
+    if (req.poe.verdict === "trapped_assets_only") {
+      return baseResult({
+        error:
+          `live broadcast refused: every asset in this contract is paused/blacklisted/non-transferable. ` +
+          `Nothing rescuable.`,
+      });
+    }
+    if (req.poe.verdict === "victim_approval_rescue") {
+      // Per-victim consent enforcement: the drain plan in this PoE only
+      // includes consented victims (rescue-prove gates this with
+      // RESCUE_APPROVAL_CONSENT_VICTIMS). We still double-check here that
+      // there IS at least one consented victim — otherwise the drain plan
+      // is empty and we'd be broadcasting nothing.
+      const consentedCount = (req.poe.approvalVictims ?? []).filter((v) => v.consented).length;
+      if (consentedCount === 0) {
+        logRescueAction({
+          findingId: req.poe.findingId,
+          attemptId: req.poe.attemptId,
+          kind: "rescue-failed",
+          detail: { reason: "no-victim-consent" },
+        });
+        return baseResult({
+          error:
+            `live broadcast refused: PoE verdict='victim_approval_rescue' but zero victims have ` +
+            `consented (RESCUE_APPROVAL_CONSENT_VICTIMS is empty or doesn't list any of the ` +
+            `${(req.poe.approvalVictims ?? []).length} at-risk victim addresses). ` +
+            `Get off-chain consent from each victim before listing their address.`,
+        });
+      }
+    }
+  }
+
   // ---- owner-executor guard -------------------------------------------------
   // PoEs produced by rescue-prove@2 mark steps with `executor: "owner"` when
   // the underlying bug is owner-only and impersonation was used on the fork.

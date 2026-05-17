@@ -946,6 +946,11 @@ interface PoeAsset {
   symbol: string;
   decimals: number;
   usdValue: number | null;
+  quirk?: {
+    kind: "normal" | "fee-on-transfer" | "paused" | "blacklisted" | "non-transferable" | "errored";
+    feeBps?: number;
+    detail?: string;
+  };
 }
 interface PoeStep {
   index: number;
@@ -975,7 +980,10 @@ interface PoeResp {
       | "true_positive_partial"
       | "no_rescue_possible"
       | "skipped"
-      | "error";
+      | "error"
+      | "victim_approval_rescue"
+      | "requires_flashloan_helper"
+      | "trapped_assets_only";
     blockNumber: number | null;
     rescuedAssets: PoeAsset[];
     drainPlan: PoeStep[];
@@ -986,6 +994,31 @@ interface PoeResp {
     createdAt: number;
     durationMs: number;
     error: string | null;
+    approvalVictims?: Array<{
+      victim: string;
+      token: string;
+      tokenSymbol: string;
+      tokenDecimals: number;
+      allowance: string;
+      balance: string;
+      drainable: string;
+      drainableUsd: number | null;
+      consented: boolean;
+    }>;
+    trappedAssets?: Array<{
+      token: string | null;
+      symbol: string;
+      decimals: number;
+      balance: string;
+      usdValue: number | null;
+      reason: string;
+    }>;
+    flashloanRequirement?: {
+      asset: string;
+      amount: string;
+      suggestedPool: string | null;
+      notes: string[];
+    } | null;
   } | null;
   actions: Array<{
     id: number;
@@ -1094,11 +1127,17 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
       ? "red"
       : poe.verdict === "true_positive_partial"
         ? "orange"
-        : poe.verdict === "no_rescue_possible"
-          ? "yellow"
-          : poe.verdict === "skipped"
-            ? "gray"
-            : "red";
+        : poe.verdict === "victim_approval_rescue"
+          ? "purple"
+          : poe.verdict === "requires_flashloan_helper"
+            ? "blue"
+            : poe.verdict === "trapped_assets_only"
+              ? "yellow"
+              : poe.verdict === "no_rescue_possible"
+                ? "yellow"
+                : poe.verdict === "skipped"
+                  ? "gray"
+                  : "red";
 
   return (
     <Box border="1px solid" borderColor={`${verdictColor}.muted`} rounded="md" p="4" bg={`${verdictColor}.subtle`}>
@@ -1161,9 +1200,29 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             <Stack gap="1">
               {poe.rescuedAssets.map((a, i) => (
                 <HStack key={i} fontSize="sm" justify="space-between">
-                  <Text fontFamily="mono" fontSize="xs">
-                    {a.symbol} {a.token ? `(${shortHash(a.token)})` : "(native)"}
-                  </Text>
+                  <HStack gap="2">
+                    <Text fontFamily="mono" fontSize="xs">
+                      {a.symbol} {a.token ? `(${shortHash(a.token)})` : "(native)"}
+                    </Text>
+                    {a.quirk && a.quirk.kind !== "normal" && (
+                      <Badge
+                        size="xs"
+                        colorPalette={
+                          a.quirk.kind === "fee-on-transfer"
+                            ? "orange"
+                            : a.quirk.kind === "paused" || a.quirk.kind === "blacklisted"
+                              ? "red"
+                              : "gray"
+                        }
+                        title={a.quirk.detail}
+                      >
+                        {a.quirk.kind}
+                        {a.quirk.kind === "fee-on-transfer" && a.quirk.feeBps != null
+                          ? ` ${(a.quirk.feeBps / 100).toFixed(2)}%`
+                          : ""}
+                      </Badge>
+                    )}
+                  </HStack>
                   <Text fontFamily="mono" fontSize="xs">
                     {fmtTokenAmount(a.amountBase, a.decimals)}
                   </Text>
@@ -1173,6 +1232,127 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
                 </HStack>
               ))}
             </Stack>
+          </Box>
+        )}
+
+        {/* v3-Q: trapped assets — value the contract holds that can't be drained */}
+        {poe.trappedAssets && poe.trappedAssets.length > 0 && (
+          <Box bg="yellow.subtle" border="1px solid" borderColor="yellow.muted" rounded="md" p="2">
+            <HStack justify="space-between" mb="1">
+              <Text fontSize="xs" color="fg.muted" textTransform="uppercase">
+                Trapped assets (not rescuable)
+              </Text>
+              <Text fontSize="xs" color="yellow.fg" fontWeight="bold">
+                {fmtUsd(
+                  poe.trappedAssets.reduce(
+                    (acc, t) => (t.usdValue != null ? acc + t.usdValue : acc),
+                    0,
+                  ),
+                )}
+              </Text>
+            </HStack>
+            <Stack gap="1">
+              {poe.trappedAssets.slice(0, 12).map((t, i) => (
+                <HStack key={i} fontSize="xs" justify="space-between">
+                  <Text fontFamily="mono">
+                    {t.symbol} {t.token ? `(${shortHash(t.token)})` : "(native)"}
+                  </Text>
+                  <Text fontFamily="mono" color="fg.muted">
+                    {fmtTokenAmount(t.balance, t.decimals)}
+                  </Text>
+                  <Text color="yellow.fg" minW="160px" textAlign="right">
+                    {t.reason.slice(0, 40)}
+                  </Text>
+                </HStack>
+              ))}
+              {poe.trappedAssets.length > 12 && (
+                <Text fontSize="xs" color="fg.muted">
+                  …and {poe.trappedAssets.length - 12} more
+                </Text>
+              )}
+            </Stack>
+          </Box>
+        )}
+
+        {/* v3-A: approval-surface victims */}
+        {poe.approvalVictims && poe.approvalVictims.length > 0 && (
+          <Box
+            bg="purple.subtle"
+            border="1px solid"
+            borderColor="purple.muted"
+            rounded="md"
+            p="2"
+          >
+            <HStack justify="space-between" mb="1">
+              <HStack gap="2">
+                <Text fontSize="xs" color="purple.fg" textTransform="uppercase" fontWeight="bold">
+                  Approval-surface victims
+                </Text>
+                <Badge colorPalette="purple" size="xs" title="These are VICTIMS' funds, not the contract's. Live rescue requires per-victim off-chain consent listed in RESCUE_APPROVAL_CONSENT_VICTIMS env.">
+                  CONSENT REQUIRED
+                </Badge>
+              </HStack>
+              <Text fontSize="xs" color="purple.fg" fontWeight="bold">
+                {fmtUsd(
+                  poe.approvalVictims.reduce(
+                    (acc, v) => (v.drainableUsd != null ? acc + v.drainableUsd : acc),
+                    0,
+                  ),
+                )}{" "}
+                ({poe.approvalVictims.filter((v) => v.consented).length}/
+                {poe.approvalVictims.length} consented)
+              </Text>
+            </HStack>
+            <Stack gap="1">
+              {poe.approvalVictims.slice(0, 10).map((v, i) => (
+                <HStack key={i} fontSize="xs" justify="space-between">
+                  <Text fontFamily="mono">
+                    {shortHash(v.victim)}{" "}
+                    {v.consented ? (
+                      <Badge colorPalette="green" size="xs" ml="1">
+                        consented
+                      </Badge>
+                    ) : null}
+                  </Text>
+                  <Text fontFamily="mono" color="fg.muted">
+                    {v.tokenSymbol} {fmtTokenAmount(v.drainable, v.tokenDecimals)}
+                  </Text>
+                  <Text color="purple.fg" minW="80px" textAlign="right">
+                    {v.drainableUsd != null ? fmtUsd(v.drainableUsd) : "—"}
+                  </Text>
+                </HStack>
+              ))}
+              {poe.approvalVictims.length > 10 && (
+                <Text fontSize="xs" color="fg.muted">
+                  …and {poe.approvalVictims.length - 10} more
+                </Text>
+              )}
+            </Stack>
+          </Box>
+        )}
+
+        {/* v3-FL: flashloan requirement */}
+        {poe.flashloanRequirement && (
+          <Box bg="blue.subtle" border="1px solid" borderColor="blue.muted" rounded="md" p="2">
+            <HStack gap="2" mb="1">
+              <Text fontSize="xs" color="blue.fg" textTransform="uppercase" fontWeight="bold">
+                Flash-loan requirement
+              </Text>
+              <Badge colorPalette="blue" size="xs">
+                {poe.flashloanRequirement.asset}
+              </Badge>
+            </HStack>
+            <Text fontSize="xs">
+              suggested pool:{" "}
+              <Text as="span" fontFamily="mono">
+                {poe.flashloanRequirement.suggestedPool ?? "n/a for this chain"}
+              </Text>
+            </Text>
+            {poe.flashloanRequirement.notes.map((n, i) => (
+              <Text key={i} fontSize="xs" color="fg.muted" mt="1">
+                • {n}
+              </Text>
+            ))}
           </Box>
         )}
 

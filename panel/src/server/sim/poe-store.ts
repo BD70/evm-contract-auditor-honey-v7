@@ -39,7 +39,11 @@ export type PoeVerdict =
   | "true_positive_partial"
   | "no_rescue_possible"
   | "skipped"
-  | "error";
+  | "error"
+  // v3 additions:
+  | "victim_approval_rescue"        // drainable VICTIMS' approvals (not the contract's funds); broadcaster requires per-victim consent
+  | "requires_flashloan_helper"     // economic.* exploit drains on fork given granted capital; live rescue needs a deployed flash-loan receiver
+  | "trapped_assets_only";          // contract holds value but every transfer reverts (paused/blacklisted across the board)
 
 export interface PoeAssetRescued {
   /** null = native asset (ETH/BNB/MATIC/…); otherwise lowercased ERC-20 address */
@@ -50,6 +54,42 @@ export interface PoeAssetRescued {
   decimals: number;
   /** USD value at fork-time price; null when we couldn't price it */
   usdValue: number | null;
+  /** v3: token-quirk classification — surfaces in UI so operators see WHY
+   *  the actual delivered amount differs from the contract's nominal balance. */
+  quirk?: {
+    kind: "normal" | "fee-on-transfer" | "paused" | "blacklisted" | "non-transferable" | "errored";
+    feeBps?: number;
+    detail?: string;
+  };
+}
+
+/** v3: approval-surface drain entries. Lists per-victim drainable amount
+ *  based on outstanding allowances FROM the contract. UI shows these
+ *  separately from rescuedAssets because the funds belong to victims, not
+ *  the contract. */
+export interface PoeApprovalVictim {
+  victim: string;
+  token: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  allowance: string;
+  balance: string;
+  drainable: string;
+  drainableUsd: number | null;
+  consented: boolean;
+}
+
+/** v3: assets the contract holds but rescue-prove couldn't extract because
+ *  every transfer path reverts (paused / blacklisted / non-transferable
+ *  token, or no admin/forwarder surface available). Surfaced in UI so the
+ *  operator sees what's TRAPPED vs RESCUABLE. */
+export interface PoeTrappedAsset {
+  token: string | null;
+  symbol: string;
+  decimals: number;
+  balance: string;
+  usdValue: number | null;
+  reason: string;
 }
 
 export interface PoeDrainStep {
@@ -130,6 +170,20 @@ export interface PoeArtifact {
    *  refuses to send those steps unless RESCUE_OWNER_PRIVATE_KEY is also
    *  configured. */
   executorOwner?: string | null;
+  /** v3: per-victim approval drain table. Populated when approval-surface
+   *  scan finds outstanding allowances. The drain plan ALSO includes the
+   *  per-victim steps but ONLY for consented victims. */
+  approvalVictims?: PoeApprovalVictim[];
+  /** v3: assets the contract owns but rescue-prove couldn't extract. */
+  trappedAssets?: PoeTrappedAsset[];
+  /** v3: when verdict='requires_flashloan_helper', a short description of
+   *  the borrow asset and amount the live rescue would need. */
+  flashloanRequirement?: {
+    asset: string;
+    amount: string;
+    suggestedPool: string | null;
+    notes: string[];
+  } | null;
 }
 
 export function newAttemptId(): string {
