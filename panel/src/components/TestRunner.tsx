@@ -36,6 +36,42 @@ interface ProgressEvt {
   msg: string;
 }
 
+interface FindingRow {
+  id: string;
+  ruleId: string;
+  severity: string;
+  title: string | null;
+  simulationStatus: string | null;
+  simulationVerdict: string | null;
+  simulationEngine: string | null;
+  simulationAttackerKind: "any" | "owner" | null;
+}
+
+const SIM_BADGE_COLOR: Record<string, string> = {
+  verified: "red",
+  not_exploitable: "green",
+  inconclusive: "yellow",
+  skipped: "gray",
+  error: "orange",
+};
+
+function simBadgeLabel(s: string | null, attackerKind: "any" | "owner" | null = null): string {
+  switch (s) {
+    case "verified":
+      return attackerKind === "owner" ? "OWNER-ONLY exploit" : "exploit witnessed (any caller)";
+    case "not_exploitable": return "no exploit (likely FP)";
+    case "inconclusive": return "inconclusive";
+    case "skipped": return "sim skipped";
+    case "error": return "sim error";
+    default: return "sim pending";
+  }
+}
+
+function simBadgePalette(s: string | null, attackerKind: "any" | "owner" | null = null): string {
+  if (s === "verified" && attackerKind === "owner") return "orange";
+  return SIM_BADGE_COLOR[s ?? ""] ?? "purple";
+}
+
 export function TestRunner() {
   const [input, setInput] = useState<InputValue | null>(null);
   const [llmJudge, setLlmJudge] = useState(false);
@@ -45,9 +81,11 @@ export function TestRunner() {
   const [progress, setProgress] = useState<ProgressEvt[]>([]);
   const [done, setDone] = useState<{ status: string; findingCount: number } | null>(null);
   const [result, setResult] = useState<any>(null);
+  const [findingRows, setFindingRows] = useState<FindingRow[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadRuns = async () => {
     try {
@@ -73,15 +111,47 @@ export function TestRunner() {
       try {
         const data = JSON.parse(e.data);
         setDone({ status: data.status, findingCount: data.findingCount });
-        fetch(`/api/audits/${runId}`)
-          .then((r) => r.json())
-          .then((j) => setResult(j.raw ?? null));
+        // Initial fetch + start polling for sim verdicts to land. The
+        // background sim worker is wake()'d on ingest so verdicts typically
+        // arrive within seconds; we poll for ~60s and stop when every
+        // finding has a verdict (or the user navigates away).
+        const refresh = () =>
+          fetch(`/api/audits/${runId}`)
+            .then((r) => r.json())
+            .then((j) => {
+              setResult(j.raw ?? null);
+              const rows: FindingRow[] = Array.isArray(j.findings) ? j.findings : [];
+              setFindingRows(rows);
+              return rows;
+            })
+            .catch(() => [] as FindingRow[]);
+        refresh().then((rows) => {
+          if (pollRef.current) clearInterval(pollRef.current);
+          const startedAt = Date.now();
+          pollRef.current = setInterval(() => {
+            const allDone = rows.length > 0 && rows.every((r) => r.simulationStatus != null);
+            if (allDone || Date.now() - startedAt > 60_000) {
+              if (pollRef.current) {
+                clearInterval(pollRef.current);
+                pollRef.current = null;
+              }
+              return;
+            }
+            refresh().then((updated) => {
+              rows = updated;
+            });
+          }, 2500);
+        });
         loadRuns();
       } catch {}
     });
     return () => {
       es.close();
       esRef.current = null;
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
   }, [runId]);
 
@@ -193,6 +263,44 @@ export function TestRunner() {
                   </Text>
                 )}
               </HStack>
+              {findingRows.length > 0 && (
+                <Box>
+                  <Text fontSize="xs" color="fg.muted" mb="2">
+                    Fork-simulation verdicts (live; updates within seconds of ingest)
+                  </Text>
+                  <Stack gap="1.5">
+                    {findingRows.map((row) => (
+                      <HStack
+                        key={row.id}
+                        gap="2"
+                        wrap="wrap"
+                        bg="bg.subtle"
+                        p="2"
+                        rounded="md"
+                        border="1px solid"
+                        borderColor="border"
+                      >
+                        <Badge size="xs" colorPalette={SEVERITY_COLORS[row.severity] ?? "gray"} variant="subtle">
+                          {row.severity}
+                        </Badge>
+                        <Text fontSize="xs" fontFamily="mono">{row.ruleId}</Text>
+                        <Badge
+                          size="xs"
+                          colorPalette={simBadgePalette(row.simulationStatus, row.simulationAttackerKind)}
+                          variant={row.simulationStatus === "verified" ? "solid" : "subtle"}
+                          ml="auto"
+                          title={row.simulationVerdict ?? undefined}
+                        >
+                          {simBadgeLabel(row.simulationStatus, row.simulationAttackerKind)}
+                        </Badge>
+                        <Link href={`/findings/${row.id}`} style={{ fontSize: 11 }}>
+                          detail →
+                        </Link>
+                      </HStack>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
               <JsonView value={result} maxHeight="320px" />
               <HStack>
                 <Link href="/findings" style={{ fontSize: 13 }}>

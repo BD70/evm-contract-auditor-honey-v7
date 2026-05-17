@@ -215,7 +215,7 @@ export async function startAudit(input: AuditInput): Promise<StartedAudit> {
     emit({ ts: Date.now(), level: "error", msg: `spawn error: ${err.message}` });
   });
 
-  proc.on("exit", (code) => {
+  proc.on("exit", async (code) => {
     const finishedAt = Date.now();
     const duration = finishedAt - started;
     const stderr = stderrChunks.join("");
@@ -240,6 +240,44 @@ export async function startAudit(input: AuditInput): Promise<StartedAudit> {
       };
       const { ids } = ingestApiJson(api, ctx);
       findingCount = ids.length;
+      // Manual audits are user-initiated against a specific contract; wake
+      // the sim worker immediately instead of waiting up to POLL_INTERVAL_MS.
+      // (No-op if anvil isn't installed or the worker is already running.)
+      if (ids.length > 0) {
+        import("./sim/worker").then(({ simWorker }) => simWorker.wake()).catch(() => {});
+      }
+      // Sidecar pass for manual audits. We run synchronously (with a time
+      // cap) so that by the time the audit row is marked "done" the
+      // sidecar's economic.unguarded_amm_action finding (when applicable)
+      // is also in the DB tagged with THIS run_id. Without this, the user
+      // sees the static-analyzer findings as 'done' and assumes nothing
+      // else was detected, even though the sidecar would have fired later.
+      // Skipped when no chain/address context (sidecar needs to fork the
+      // chain at the live address).
+      if (input.chainId && resolved.address) {
+        try {
+          const { runEconomicSidecar } = await import("./sim/worker");
+          const SIDECAR_TIMEOUT_MS = Number(process.env.SIM_SIDECAR_MANUAL_TIMEOUT_MS ?? 25_000);
+          await Promise.race([
+            runEconomicSidecar({
+              chainId: input.chainId,
+              contractAddress: resolved.address,
+              bytecodeHash,
+              runId,
+            }),
+            new Promise((resolve) => setTimeout(resolve, SIDECAR_TIMEOUT_MS)),
+          ]);
+          // Re-count findings so the run row's finding_count reflects the
+          // sidecar's contribution when one was materialised under this
+          // run_id.
+          const counted = rawDb
+            .prepare(`SELECT COUNT(*) AS c FROM findings WHERE run_id = ?`)
+            .get(runId) as { c: number } | undefined;
+          if (counted && typeof counted.c === "number") findingCount = counted.c;
+        } catch (err) {
+          console.warn("[audit-service] sidecar pass failed", err);
+        }
+      }
     }
     rawDb
       .prepare(

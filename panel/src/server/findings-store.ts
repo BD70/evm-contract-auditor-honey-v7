@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import { rawDb } from "@/src/db/client";
 import { eventBus, type FindingEvent } from "./event-bus";
+import { exposureSurfaceForRule } from "./sim/rule-surface";
 
 type Source = "runner" | "manual";
 
@@ -139,6 +140,8 @@ export interface FindingsQuery {
   chainId?: number;
   status?: string;
   since?: number;
+  /** filter by simulation_status; pass "unverified" to match NULL/pending */
+  simStatus?: string[];
 }
 
 export function queryFindings(q: FindingsQuery) {
@@ -173,6 +176,17 @@ export function queryFindings(q: FindingsQuery) {
     const s = `%${q.search}%`;
     params.push(s, s, s, s);
   }
+  if (q.simStatus?.length) {
+    const wantsUnverified = q.simStatus.includes("unverified") || q.simStatus.includes("pending");
+    const concrete = q.simStatus.filter((s) => s !== "unverified" && s !== "pending");
+    const clauses: string[] = [];
+    if (wantsUnverified) clauses.push("simulation_status IS NULL");
+    if (concrete.length) {
+      clauses.push(`simulation_status IN (${concrete.map(() => "?").join(",")})`);
+      params.push(...concrete);
+    }
+    if (clauses.length) where.push(`(${clauses.join(" OR ")})`);
+  }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const limit = Math.max(1, Math.min(500, q.limit ?? 50));
   const offset = Math.max(0, q.offset ?? 0);
@@ -181,10 +195,40 @@ export function queryFindings(q: FindingsQuery) {
       `SELECT id, run_id as runId, rule_id as ruleId, severity, status, confidence, title, category,
               bytecode_hash as bytecodeHash, contract_address as contractAddress, chain_id as chainId,
               block_number as blockNumber, tx_hash as txHash, discovered_at as discoveredAt, source,
-              judged_by as judgedBy, judge_verdict as judgeVerdict
+              judged_by as judgedBy, judge_verdict as judgeVerdict,
+              simulation_status as simulationStatus, simulation_verdict as simulationVerdict,
+              simulation_engine as simulationEngine, simulated_at as simulatedAt,
+              simulation_evidence_json as simulationEvidenceJson
        FROM findings ${clause} ORDER BY discovered_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset);
+    .all(...params, limit, offset) as Array<Record<string, unknown>>;
+
+  // Derive lightweight UI-friendly fields from the evidence JSON so the
+  // frontend doesn't re-parse for every row. Fields:
+  //   simulationAttackerKind : "any" | "owner" | null
+  //   ruleExposureSurface    : "native" | "token" | "both" | "none"
+  for (const r of rows) {
+    const raw = r.simulationEvidenceJson as string | null;
+    let attackerKind: "any" | "owner" | null = null;
+    let centralizationRisk = false;
+    if (raw) {
+      try {
+        const ev = JSON.parse(raw);
+        if (ev && (ev.attackerKind === "any" || ev.attackerKind === "owner")) {
+          attackerKind = ev.attackerKind;
+        }
+        if (ev?.centralizationRisk === true) centralizationRisk = true;
+      } catch {
+        /* ignore — evidence JSON malformed */
+      }
+    }
+    r.simulationAttackerKind = attackerKind;
+    r.simulationCentralizationRisk = centralizationRisk;
+    r.ruleExposureSurface = exposureSurfaceForRule(String(r.ruleId ?? ""));
+    // Don't ship the entire evidence blob in the listing; it can be huge.
+    delete r.simulationEvidenceJson;
+  }
+
   const totalRow = rawDb.prepare(`SELECT COUNT(*) as n FROM findings ${clause}`).get(...params) as { n: number };
   return { rows, total: totalRow.n, limit, offset };
 }

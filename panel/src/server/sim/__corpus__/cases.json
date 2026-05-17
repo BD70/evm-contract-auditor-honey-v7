@@ -1,0 +1,203 @@
+{
+  "_doc": [
+    "Verifier regression corpus. Every entry here MUST keep producing its `expect.status` (and `expect.attackerKind` when set) across verifier changes.",
+    "",
+    "Add a case here every time:",
+    "  - a user reports a misclassification we fix (true positive or true negative)",
+    "  - we bump an ENGINE_VERSION",
+    "  - we add a new probe variant",
+    "",
+    "Fields:",
+    "  id            : short stable identifier (used in the runner's diff output)",
+    "  chainId       : EVM chain id",
+    "  address       : deployed contract address (checksummed or lower, either fine)",
+    "  ruleId        : the rule the verifier is checking",
+    "  expect.status : verified | not_exploitable | inconclusive  (skipped/error are never expected)",
+    "  expect.attackerKind (optional) : 'any' | 'owner' — only enforced when set",
+    "  expect.verdictContains (optional) : substring the verdict text must include",
+    "  tags          : free-form labels for filtering (e.g. 'symbiosis', 'rescuefunds-admin')",
+    "  notes         : human note explaining why this case is in the corpus"
+  ],
+  "cases": [
+    {
+      "id": "symbiosis-onswap-mainnet",
+      "chainId": 1,
+      "address": "0xfF9B21c3bfA4BCE9b20b55fEd56d102ceD48b0F6",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "symbiosis", "real-world-tp"],
+      "notes": "Symbiosis MetaRouter OnSwap. Anyone can drain token balance. This is the case we hand-debugged for v13 — if it regresses we broke the OnSwap fix."
+    },
+    {
+      "id": "symbiosis-onswap-mainnet-calldataload",
+      "chainId": 1,
+      "address": "0xfF9B21c3bfA4BCE9b20b55fEd56d102ceD48b0F6",
+      "ruleId": "call.unvalidated_calldataload_target_injection",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "symbiosis", "real-world-tp"],
+      "notes": "Same victim as above but the sister rule. Both must fire."
+    },
+    {
+      "id": "any-caller-4bf92a",
+      "chainId": 1,
+      "address": "0x4bf92a7ea93933a15c1f6a2960cdf7712f46d197",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "real-world-tp"],
+      "notes": "victim forwarded CALL via selector 0x77b54bad (arg pos 0). Earliest known any-caller TP."
+    },
+    {
+      "id": "any-caller-67d5ae",
+      "chainId": 1,
+      "address": "0x67d5ae348499427ff039d56154a8919780083004",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "real-world-tp"],
+      "notes": "3 STATICCALL forwards via selector 0xe1ee0f79 (Symbiosis-family router)."
+    },
+    {
+      "id": "any-caller-9cea2c",
+      "chainId": 1,
+      "address": "0x9cea2c26bcefb5e4d0e034420c4dd22655cc59fc",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "real-world-tp"],
+      "notes": "1 STATICCALL forward, attacker-controlled probe."
+    },
+    {
+      "id": "any-caller-b9e137",
+      "chainId": 1,
+      "address": "0xB9E13785127BFfCc3dc970A55F6c7bF0844a3C15",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "real-world-tp"]
+    },
+    {
+      "id": "any-caller-c3f288",
+      "chainId": 1,
+      "address": "0xc3f288b3263cbc9ec6f88f807b933f5d45c84ca2",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "real-world-tp"]
+    },
+    {
+      "id": "any-caller-f621fb",
+      "chainId": 1,
+      "address": "0xf621Fb08BBE51aF70e7E0F4EA63496894166Ff7F",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["any-caller", "real-world-tp"]
+    },
+    {
+      "id": "owner-rescue-eth-2bd1e2",
+      "chainId": 56,
+      "address": "0x2Bd1e261fF3CAB011479Cc7EA46FbB1fb24e00Ab",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "owner" },
+      "expect.verdictContains": "withdrawETH",
+      "tags": ["owner-only", "admin-pattern", "rescue-pattern"],
+      "notes": "withdrawETH owner-only forwarder. Selector 0x690d8320. EOA owner = HIGH rug risk."
+    },
+    {
+      "id": "owner-rescue-arb-bec622",
+      "chainId": 42161,
+      "address": "0xbec6222b2ff95735ee83ca20da9f190deaba6489",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "owner" },
+      "tags": ["owner-only", "admin-pattern", "arbitrum"]
+    },
+    {
+      "id": "owner-rescue-pol-a39b18",
+      "chainId": 137,
+      "address": "0xa39B189Eac25Ad9DE6F6492BB6681105f09257F3",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "owner" },
+      "tags": ["owner-only", "admin-pattern", "polygon"]
+    },
+    {
+      "id": "owner-rescue-op-2ddf16",
+      "chainId": 10,
+      "address": "0x2ddf16BA6d0180e5357d5e170eF1917a01b41fc0",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "verified", "attackerKind": "owner" },
+      "tags": ["owner-only", "admin-pattern", "optimism"]
+    },
+    {
+      "id": "tn-0000d70a",
+      "chainId": 1,
+      "address": "0x0000d70a6a8ad7bac287ef917700a017289b0000",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative"],
+      "notes": "Static analyzer flagged this but dynamic verifier confirms NOT exploitable. If a verifier change flips this to 'verified' we created a false positive."
+    },
+    {
+      "id": "tn-006beaf0",
+      "chainId": 1,
+      "address": "0x006beaf05ab75c848c92d0889165f4d0780d286c",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative"]
+    },
+    {
+      "id": "tn-025547ca",
+      "chainId": 1,
+      "address": "0x025547ca2288cc0cdd4299ce32778e425c8d800f",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative"]
+    },
+    {
+      "id": "tn-028e3ddd",
+      "chainId": 1,
+      "address": "0x028e3ddd01698c833b56d8c81a106e039aa26969",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative"]
+    },
+    {
+      "id": "tn-07e99e4d",
+      "chainId": 1,
+      "address": "0x07e99e4dba3d2821e18dcfdb485be83af33b8ea8",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative"]
+    },
+    {
+      "id": "econ-bsc-91334d03-amm",
+      "chainId": 56,
+      "address": "0x91334d03dd9b9de8d48b50fe389337eeb759aeb1",
+      "ruleId": "economic.unguarded_amm_action",
+      "expect": { "status": "verified", "attackerKind": "any" },
+      "tags": ["economic-attack", "amm", "flash-loan", "bsc", "real-world-tp", "permissionless-action"],
+      "notes": "GPC/MSC pool drain. releaseReward(uint256) is permissionless; calling it with arbitrary amount forces a swap on Pancake (UniV2 fork) that moves the pool price. Attacker arbitraged ~150 WBNB via flash loan. This is THE case that motivated the economic-attack verifier."
+    },
+    {
+      "id": "econ-bsc-91334d03-arbcall-stays-tn",
+      "chainId": 56,
+      "address": "0x91334d03dd9b9de8d48b50fe389337eeb759aeb1",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative", "economic-attack-relative", "rule-mismatch-anchor"],
+      "notes": "INTENTIONAL TN: the static analyzer matched this rule on the GPC/MSC contract, but releaseReward doesn't actually take a caller-supplied call target — the AMM router is hardcoded. The economic-attack verifier (separate rule) catches the REAL bug. This anchor case ensures we don't 'fix' the FN by loosening the arbitrary-call rule (which would create FPs elsewhere)."
+    },
+    {
+      "id": "econ-bsc-mt-b32979f3-pair-direct",
+      "chainId": 56,
+      "address": "0xb32979f3a5b426a4a6ae920f2b391d885abf4c18",
+      "ruleId": "economic.unguarded_amm_action",
+      "expect": { "status": "verified", "attackerKind": "any", "verdictContains": "pair-direct" },
+      "tags": ["economic-attack", "pair-direct", "sync", "deflationary-burn", "flash-loan", "bsc", "real-world-tp"],
+      "notes": "Movie Token (MT) drain, March 2026, ~$242K. Attacker flash-loaned ~358k WBNB, bought MT, used PancakePair flash-swap callback to send MT back to the pair (triggering 10% sell tax → pendingBurnAmount). Called distributeDailyRewards on the LP mining contract → _executePendingBurn → burn ~6.7B MT from pair balance + pair.sync(). Pair reserves collapsed; attacker arbitraged at the manipulated rate and walked away. The MT token's bytecode PUSHes the sync() selector (0xfff6cae9) twice — that's the static smoking gun this case anchors. Verdict text must contain 'pair-direct' to prove the right code path fired."
+    },
+    {
+      "id": "econ-bsc-mt-b32979f3-arbcall-stays-tn",
+      "chainId": 56,
+      "address": "0xb32979f3a5b426a4a6ae920f2b391d885abf4c18",
+      "ruleId": "call.arbitrary_external_call_unvalidated_target",
+      "expect": { "status": "not_exploitable" },
+      "tags": ["true-negative", "economic-attack-relative", "rule-mismatch-anchor", "mt-token"],
+      "notes": "INTENTIONAL TN: static analyzer also flagged this rule on the MT token, but the MT bug is a deflationary-burn pair-manipulation, NOT an arbitrary-call. The economic-attack verifier catches it via the pair-direct static path. Anchor ensures we don't loosen the arbitrary-call rule."
+    }
+  ]
+}

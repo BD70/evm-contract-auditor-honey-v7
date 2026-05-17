@@ -39,6 +39,63 @@ export function fmtTs(ts: number | null | undefined): string {
   return d.toLocaleString();
 }
 
+/**
+ * Format a base-unit amount (e.g. wei) into a short human-readable string
+ * with the right number of significant digits for at-a-glance reading. Uses
+ * BigInt so we never lose precision on 18-decimal token balances.
+ *
+ *   fmtTokenAmount("1234567890000000000", 18) -> "1.23"
+ *   fmtTokenAmount("4500000",            6 ) -> "4.50"
+ *   fmtTokenAmount("0",                  18) -> "0"
+ */
+export function fmtTokenAmount(
+  base: string | bigint | null | undefined,
+  decimals: number,
+  maxFrac = 4,
+): string {
+  if (base == null) return "—";
+  let bi: bigint;
+  try {
+    bi = typeof base === "bigint" ? base : BigInt(base);
+  } catch {
+    return "—";
+  }
+  if (bi === 0n) return "0";
+  const neg = bi < 0n;
+  if (neg) bi = -bi;
+  const d = Math.max(0, decimals | 0);
+  const divisor = 10n ** BigInt(d);
+  const whole = bi / divisor;
+  const frac = bi % divisor;
+  // For amounts >= 1, show 2 fractional digits; for very small amounts, expand
+  // until we have at least one non-zero digit (up to maxFrac).
+  let fracStr = frac.toString().padStart(d, "0");
+  if (whole >= 1n) {
+    fracStr = fracStr.slice(0, 2).replace(/0+$/, "");
+  } else {
+    let cut = Math.min(maxFrac, fracStr.length);
+    let firstNonZero = fracStr.search(/[^0]/);
+    if (firstNonZero === -1) firstNonZero = 0;
+    cut = Math.max(cut, firstNonZero + 2);
+    fracStr = fracStr.slice(0, cut).replace(/0+$/, "");
+  }
+  const wholeStr = whole.toLocaleString("en-US");
+  const out = fracStr ? `${wholeStr}.${fracStr}` : wholeStr;
+  return neg ? `-${out}` : out;
+}
+
+/**
+ * Compact label such as "12.4 ETH" or "0 ETH". Wraps {@link fmtTokenAmount}
+ * and tacks the symbol on the end.
+ */
+export function fmtNativeAmount(
+  wei: string | bigint | null | undefined,
+  symbol: string,
+  decimals = 18,
+): string {
+  return `${fmtTokenAmount(wei, decimals)} ${symbol}`;
+}
+
 export const SEVERITY_COLORS: Record<string, string> = {
   critical: "red",
   high: "orange",

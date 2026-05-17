@@ -1,92 +1,182 @@
 
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
-import chokidar, { type FSWatcher } from "chokidar";
 import { panelPaths } from "./paths";
 import { ingestApiJson, upsertDeployment } from "./findings-store";
 import { rawDb } from "@/src/db/client";
 
 const MAX_INGEST_BYTES = 8 * 1024 * 1024;
+const RECONCILE_INTERVAL_MS = Number(process.env.INGEST_RECONCILE_INTERVAL_MS ?? 5_000);
+// Yield to the event loop every N directories scanned so a long sweep over a
+// runner-state tree with thousands of subdirs doesn't starve HTTP handlers.
+const SCAN_YIELD_EVERY = 64;
+// Cap the in-memory `seen` set so a multi-day uptime can't bloat the process.
+// 100k file paths is ~10MB worst case — well below any practical state-dir size.
+const SEEN_MAX_ENTRIES = 100_000;
+const SEEN_TRIM_TO = 75_000;
 
 type Globals = { __panelIngestWatcher?: IngestWatcher };
 
+// Runner artifacts live in two layouts:
+//   legacy single-runner: <STATE_DIR>/artifacts/<chainId>/<block>/<tx>/<kind>.json
+//   chain mode:           <STATE_DIR>/<slug>/artifacts/<chainId>/<block>/<tx>/<kind>.json
+// Checkpoints: <STATE_DIR>/checkpoint.json or <STATE_DIR>/<slug>/checkpoint.json.
+//
+// We previously used chokidar with a recursive watch on the state dir, but
+// macOS's per-process fd limit (256 by default) is blown out by the thousands
+// of per-tx subdirectories the runner creates, producing an EMFILE storm and a
+// multi-GB error-object leak in the panel. Polling every few seconds is plenty
+// fast for this workload (runners emit artifacts in block-sized bursts and we
+// don't need sub-second ingestion latency) and uses zero file descriptors.
 class IngestWatcher {
-  private watcher: FSWatcher | null = null;
   private started = false;
   private seen = new Set<string>();
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
 
   async startIfNeeded() {
     if (this.started) return;
     this.started = true;
     try {
-      fs.mkdirSync(panelPaths.artifactsDir, { recursive: true });
+      fs.mkdirSync(panelPaths.stateDir, { recursive: true });
     } catch {}
-    // One-shot reconcile
-    this.reconcile().catch((err) => console.warn("[ingest] reconcile error", err));
-
-    this.watcher = chokidar.watch(
-      [`${panelPaths.artifactsDir}/**/*.json`, panelPaths.checkpointFile],
-      {
-        ignoreInitial: true,
-        awaitWriteFinish: { stabilityThreshold: 250, pollInterval: 100 },
-      },
-    );
-    this.watcher.on("add", (p) => this.handlePath(p).catch(() => {}));
-    this.watcher.on("change", (p) => this.handlePath(p).catch(() => {}));
+    this.scheduleTick(0);
   }
 
   async stop() {
-    if (this.watcher) await this.watcher.close();
-    this.watcher = null;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     this.started = false;
   }
 
+  private scheduleTick(delay = RECONCILE_INTERVAL_MS) {
+    if (!this.started) return;
+    this.timer = setTimeout(() => {
+      this.tick().catch((err) => console.warn("[ingest] tick error", err));
+    }, delay);
+  }
+
+  private async tick() {
+    if (this.running) {
+      this.scheduleTick();
+      return;
+    }
+    this.running = true;
+    try {
+      await this.reconcile();
+    } finally {
+      this.running = false;
+      this.scheduleTick();
+    }
+  }
+
   private async reconcile() {
-    if (!fs.existsSync(panelPaths.artifactsDir)) return;
-    const stack = [panelPaths.artifactsDir];
+    // Use async fsp.* APIs and yield to the event loop every SCAN_YIELD_EVERY
+    // directories so a sweep over a 8000+-file runner-state tree never holds
+    // the loop long enough to make HTTP feel hung.
+    let dirRoot: fs.Stats;
+    try {
+      dirRoot = await fsp.stat(panelPaths.stateDir);
+    } catch {
+      return;
+    }
+    if (!dirRoot.isDirectory()) return;
+
+    let scanned = 0;
+    let processed = 0;
+    let dirsSinceYield = 0;
+    const stack: string[] = [panelPaths.stateDir];
     while (stack.length) {
       const dir = stack.pop()!;
       let entries: fs.Dirent[];
       try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
+        entries = await fsp.readdir(dir, { withFileTypes: true });
       } catch {
         continue;
       }
+      dirsSinceYield++;
+      if (dirsSinceYield >= SCAN_YIELD_EVERY) {
+        dirsSinceYield = 0;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       for (const e of entries) {
         const full = path.join(dir, e.name);
-        if (e.isDirectory()) stack.push(full);
-        else if (e.isFile() && full.endsWith(".json")) {
-          await this.handlePath(full);
+        if (e.isDirectory()) {
+          if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+          stack.push(full);
+          continue;
         }
+        if (!e.isFile() || !full.endsWith(".json")) continue;
+        scanned++;
+        // checkpoint.json gets rewritten by the runner every block; always
+        // re-process it. Everything else is processed once.
+        if (e.name !== "checkpoint.json" && this.seen.has(full)) continue;
+        const handled = await this.handlePath(full);
+        if (handled) processed++;
       }
     }
-    await this.ingestCheckpoint();
+    this.trimSeen();
+    if (processed > 0) {
+      console.log(`[ingest] reconcile processed ${processed} new file(s) (scanned ${scanned})`);
+    }
   }
 
-  private async handlePath(p: string) {
-    if (p === panelPaths.checkpointFile) return this.ingestCheckpoint();
-    if (!p.endsWith(".json")) return;
-    if (this.seen.has(p)) return;
+  private trimSeen() {
+    if (this.seen.size <= SEEN_MAX_ENTRIES) return;
+    // Sets retain insertion order; drop oldest entries until we're back under
+    // the target. Cheap O(n) but only runs when we've crossed the cap.
+    const drop = this.seen.size - SEEN_TRIM_TO;
+    let dropped = 0;
+    for (const k of this.seen) {
+      if (dropped++ >= drop) break;
+      this.seen.delete(k);
+    }
+  }
+
+  private parsePathContext(p: string): {
+    slug: string | null;
+    chainId: number | null;
+    blockNumber: number | null;
+    txHash: string | null;
+  } {
+    const rel = path.relative(panelPaths.stateDir, p).split(path.sep);
+    const artIdx = rel.indexOf("artifacts");
+    if (artIdx < 0) return { slug: null, chainId: null, blockNumber: null, txHash: null };
+    const slug = artIdx > 0 ? rel[0] : null;
+    const after = rel.slice(artIdx + 1);
+    // after = [<chainId>, <block>, <tx>, <kind>.json]
+    return {
+      slug,
+      chainId: after[0] ? Number(after[0]) || null : null,
+      blockNumber: after[1] ? Number(after[1]) || null : null,
+      txHash: after[2] ?? null,
+    };
+  }
+
+  private async handlePath(p: string): Promise<boolean> {
+    const base = path.basename(p);
+    if (base === "checkpoint.json") {
+      await this.ingestCheckpoint(p);
+      return true;
+    }
+    if (!p.endsWith(".json")) return false;
+    if (this.seen.has(p)) return false;
 
     try {
-      const stat = fs.statSync(p);
-      if (stat.size > MAX_INGEST_BYTES) return;
-      const txt = fs.readFileSync(p, "utf8");
+      const stat = await fsp.stat(p);
+      if (stat.size > MAX_INGEST_BYTES) {
+        this.seen.add(p);
+        return false;
+      }
+      const txt = await fsp.readFile(p, "utf8");
       const obj = JSON.parse(txt);
 
-      // Extract deployment + audit linkage from path: artifacts/<chainId>/<block>/<tx>/<kind>.json
-      const segs = path.relative(panelPaths.artifactsDir, p).split(path.sep);
-      let chainId: number | null = null;
-      let blockNumber: number | null = null;
-      let txHash: string | null = null;
-      if (segs.length >= 4) {
-        chainId = Number(segs[0]) || null;
-        blockNumber = Number(segs[1]) || null;
-        txHash = segs[2];
-      }
+      const { chainId, blockNumber, txHash } = this.parsePathContext(p);
 
-      const file = path.basename(p);
-      if (file === "deployment.json") {
+      if (base === "deployment.json") {
         upsertDeployment({
           chainId,
           blockNumber,
@@ -101,30 +191,55 @@ class IngestWatcher {
           runnerEventId: obj.correlationId ?? null,
           rawJson: obj,
         });
-      } else if (obj && obj.schema && String(obj.schema).startsWith("evm-audit.api")) {
-        const contractAddress =
-          obj.contract_address ?? obj.bytecode_identity?.contract_address ?? null;
+        this.seen.add(p);
+        return true;
+      }
+
+      // Runner wraps the bare API JSON under `apiJson`; manual audits emit it bare.
+      const api =
+        obj && typeof obj === "object" && obj.apiJson && typeof obj.apiJson === "object"
+          ? obj.apiJson
+          : obj;
+      if (api && api.schema && String(api.schema).startsWith("evm-audit.api")) {
+        const ctxAddress =
+          (obj?.target?.contractAddress ?? obj?.target?.targetAddress) ||
+          api.contract_address ||
+          api.bytecode_identity?.contract_address ||
+          (api.chain_context && api.chain_context.contractAddress) ||
+          null;
         const bytecodeHash =
-          obj.bytecode_identity?.bytecode_hash ?? obj.bytecode_identity?.runtime_code_hash ?? null;
-        ingestApiJson(obj, {
+          api.bytecode_identity?.bytecode_hash ||
+          api.bytecode_identity?.runtime_code_hash ||
+          api.bytecode_identity?.runtime_hash ||
+          obj?.target?.runtimeBytecodeHash ||
+          null;
+        ingestApiJson(api, {
           source: "runner",
-          chainId,
-          blockNumber,
-          txHash,
-          contractAddress,
+          chainId: chainId ?? (api.chain_context?.chainId ?? null),
+          blockNumber: blockNumber ?? (api.chain_context?.blockNumber ?? null),
+          txHash: txHash ?? (api.chain_context?.txHash ?? null),
+          contractAddress: ctxAddress,
           bytecodeHash,
         });
       }
       this.seen.add(p);
-    } catch (err) {
-      // swallow
+      return true;
+    } catch {
+      // record as seen so we don't retry forever on a broken file
+      this.seen.add(p);
+      return false;
     }
   }
 
-  private async ingestCheckpoint() {
+  private async ingestCheckpoint(filePath?: string) {
     try {
-      if (!fs.existsSync(panelPaths.checkpointFile)) return;
-      const txt = fs.readFileSync(panelPaths.checkpointFile, "utf8");
+      const p = filePath ?? panelPaths.checkpointFile;
+      let txt: string;
+      try {
+        txt = await fsp.readFile(p, "utf8");
+      } catch {
+        return;
+      }
       const obj = JSON.parse(txt);
       const upsert = rawDb.prepare(`
         INSERT OR REPLACE INTO webhook_events (event_id, event_type, status, attempts, last_error, payload_json, updated_at)

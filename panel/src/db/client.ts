@@ -14,6 +14,17 @@ function ensureDir(p: string) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
 }
 
+function columnExists(raw: Database.Database, table: string, column: string): boolean {
+  const rows = raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((r) => r.name === column);
+}
+
+function addColumnIfMissing(raw: Database.Database, table: string, column: string, decl: string) {
+  if (!columnExists(raw, table, column)) {
+    raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
+}
+
 function applyMigrations(raw: Database.Database) {
   raw.exec(`
     CREATE TABLE IF NOT EXISTS findings (
@@ -105,6 +116,41 @@ function applyMigrations(raw: Database.Database) {
       reason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_lifecycle_at ON runner_lifecycle(at);
+  `);
+
+  // Simulation columns (fork-based exploit verification). Added as a follow-up
+  // migration so existing databases pick them up on next boot without losing
+  // data. simulation_status: pending | running | verified | refuted |
+  // inconclusive | skipped | error. simulation_verdict is a finer-grained
+  // outcome, e.g. "exploitable" | "not_exploitable" | "decon_failed".
+  addColumnIfMissing(raw, "findings", "simulation_status", "TEXT");
+  addColumnIfMissing(raw, "findings", "simulation_verdict", "TEXT");
+  addColumnIfMissing(raw, "findings", "simulation_evidence_json", "TEXT");
+  addColumnIfMissing(raw, "findings", "simulation_engine", "TEXT");
+  addColumnIfMissing(raw, "findings", "simulated_at", "INTEGER");
+  raw.exec(
+    `CREATE INDEX IF NOT EXISTS idx_findings_sim_status ON findings(simulation_status, severity, discovered_at)`,
+  );
+
+  // Per-(bytecode_hash, rule_id) simulation cache. Results are deterministic
+  // for a given (bytecode, rule, simulation engine version) tuple so we only
+  // simulate each contract once and reuse the verdict across all findings
+  // sharing the same bytecode (which is overwhelmingly the case: most flagged
+  // proxy contracts share an implementation).
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS simulation_cache (
+      bytecode_hash TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      engine TEXT NOT NULL,
+      engine_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      verdict TEXT,
+      evidence_json TEXT,
+      simulated_at INTEGER NOT NULL,
+      duration_ms INTEGER,
+      PRIMARY KEY (bytecode_hash, rule_id, engine, engine_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_simcache_at ON simulation_cache(simulated_at);
   `);
 }
 

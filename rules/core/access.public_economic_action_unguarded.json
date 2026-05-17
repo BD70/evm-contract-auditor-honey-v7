@@ -1,0 +1,198 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "access.public_economic_action_unguarded",
+    "internal_name": "reference_access_public_economic_action_unguarded_v1",
+    "title": "Permissionless function performs a swap-like economic action with no caller guard",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.72,
+      "with_witness": 0.9,
+      "inconclusive": 0.34
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "permissionless_economic_action",
+    "attack_thesis": "A non-view function with no caller authorization triggers a swap-like operation on an AMM router (Uniswap/Pancake/Sushi V2/V3/Curve). The swap's parameters are caller-influenced (typical: a uint amount argument). Because the AMM swap moves the pool's spot price, an attacker can sandwich the call with a flash loan: borrow asset A, push the price, trigger the unguarded swap on the victim (forcing the victim to sell at a bad rate), arbitrage the now-skewed pool, repay the loan, and pocket the difference. This is the root pattern behind BurgerSwap, the BSC GPC/MSC drain, and many small-cap reward-distribution exploits.",
+    "protected_asset_or_effect": [
+      "asset_transfer",
+      "swap_output_integrity",
+      "pool_price_integrity",
+      "accounting_mutation"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "SWAP_OR_LIQUIDITY_PATTERN"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "permissionless_swap_path",
+        "match": {
+          "function": {
+            "has_swap_signature": true
+          },
+          "reachable_effect_any": [
+            "asset_transfer",
+            "accounting_mutation"
+          ]
+        },
+        "bind": {
+          "path": "$amm_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_OWNABLE",
+      "OZ_TIMELOCK_CONTROLLER",
+      "timelock_or_governance_guard",
+      "STRONG_AUTH_GUARD",
+      "AUTH_GUARDED",
+      "GNOSIS_SAFE_PROXY",
+      "registry_guard",
+      "allowlist_guard",
+      "authorization_guard"
+    ],
+    "downgrade_if_any": [
+      "partial_auth_check",
+      "off_chain_slippage_enforcement"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_guard_resolution",
+      "unresolved_comparison_path",
+      "custom_swap_accounting"
+    ],
+    "manual_review_if_any": [
+      "factory_or_dispatcher_pattern",
+      "aggregator_delegates_slippage"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "transaction_sequence",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "path_match",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.75,
+    "min_storage_role_confidence": 0.55,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 12,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/access.public_economic_action_unguarded",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "unguarded_releaseReward_to_pancake_router_positive",
+      "owner_guarded_admin_rebalance_negative",
+      "guard_resolution_ambiguous_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Permissionless function triggers AMM swap — vulnerable to flash-loan price manipulation",
+    "summary": "Matches non-view functions with no caller-authorization guard that reach a swap-like external call. An attacker can trigger the call permissionlessly and wrap it in a flash-loan sandwich to extract arbitrage profit from the resulting pool-price move.",
+    "user_summary": "Anyone can call this function. The function performs a token swap on a DEX (Uniswap/Pancake/Sushi-style router). Because the swap moves the pool's price and there is no access control, an attacker can borrow funds via a flash loan, manipulate the pool price up or down, trigger this function so the contract trades at a bad rate, then arbitrage the difference and repay the loan in a single atomic transaction. The attacker walks away with the profit; the contract is drained of value.",
+    "technical_summary": "The detector matches functions whose body contains a swap-like external call (UniV2/V3 routers, Curve exchange, Balancer batchSwap, or direct pair swap selectors) AND whose dispatch reaches that call without any authorized_path predicate firing — no caller==owner check, no role guard, no allowlist. SWAP_OR_LIQUIDITY_PATTERN must hold (the analyzer has resolved at least one swap-shape call site). The reachable_effect set must include asset_transfer or accounting_mutation, confirming value moves on the unguarded path. The verifier (anvil-fork-economic) provides the dynamic witness by replaying the call from an attacker EOA and observing the swap selector fire in the trace.",
+    "exploit_narrative": "The attacker drafts an atomic exploit transaction: (1) flash-borrow a large amount of token A from Aave/Balancer/Uniswap; (2) swap A for B on the victim's AMM pair to push the price; (3) call the unguarded function on the victim contract — the contract swaps its own balance at the now-bad rate; (4) reverse the manipulation by swapping B back to A; (5) repay the flash loan plus fee; (6) keep the residual A as profit. Total cost: one block, one transaction, capped only by the size of the available flash loan.",
+    "exploit_preconditions": [
+      "function has no caller==owner / role / allowlist guard",
+      "function reaches a call to a known DEX router / pair swap selector",
+      "the swap consumes attacker-influenced or contract-balance amounts",
+      "a tradeable AMM pair exists with non-trivial reserves the attacker can manipulate"
+    ],
+    "remediation_hints": [
+      "add an owner / role / allowlist guard (OZ Ownable, AccessControl, governance)",
+      "if the function is INTENDED to be permissionless, enforce slippage internally: compute expected output from an external oracle (Chainlink TWAP, Uniswap V3 TWAP) and revert if the actual is outside a tolerance band",
+      "rate-limit per-block or per-caller to bound MEV extraction even when the function is open",
+      "consider whether the function should exist at all — many 'releaseReward' / 'distribute' / 'rebalance' patterns should be admin-only crons rather than callable by anyone"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "defi_logic",
+        "mev_protection"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "victim contract holds token balance the swap will consume",
+      "tradeable AMM pair exists with the token",
+      "flash-loan source is available on the chain (Aave / Balancer / Uniswap)"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "flash-borrow ~$N worth of token A",
+        "expected_state": "attacker holds the borrowed amount for the duration of the tx"
+      },
+      {
+        "actor": "attacker",
+        "action": "swap A for B on the AMM pair to push the price up by X%",
+        "expected_state": "pool reserves skewed; spot price moved"
+      },
+      {
+        "actor": "attacker",
+        "action": "call the unguarded function on the victim; victim swaps at the bad rate",
+        "expected_state": "victim spends value to obtain less than market value back"
+      },
+      {
+        "actor": "attacker",
+        "action": "swap B back to A to revert the price; repay the flash loan + fee",
+        "expected_state": "pool restored, loan repaid, residual A retained as profit"
+      }
+    ],
+    "success_condition": "attacker ends the transaction with more value than they started, paid for by the victim contract",
+    "environment_requirements": [
+      "deployed victim contract with the unguarded function",
+      "tradeable AMM pair (UniV2/V3/Pancake/Curve)",
+      "flash-loan source on the chain"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 2000000
+    }
+  }
+}

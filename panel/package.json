@@ -5,7 +5,8 @@
     "build": "next build",
     "start": "next start",
     "type-check": "tsc",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "sim:corpus": "tsx src/server/sim/__corpus__/runner.ts"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.35.0",
@@ -31,6 +32,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "drizzle-kit": "^0.28.0",
+    "tsx": "^4.22.1",
     "typescript": "^5.6.0"
   }
 }
