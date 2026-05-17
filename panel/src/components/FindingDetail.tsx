@@ -185,21 +185,57 @@ export function FindingDetail({ id }: { id: string }) {
           {f.simulation_status && (() => {
             const ak = attackerKindOf(f);
             const isOwnerOnly = f.simulation_status === "verified" && ak === "owner";
+            const poe = (f as any).poe_verdict as string | null;
+            const poeAk = (f as any).poe_attacker_kind as string | null;
+            const poeUsd = (f as any).poe_rescued_usd as number | null;
+
+            // PoE verdict is authoritative when present
+            if (f.simulation_status === "verified" && poe) {
+              if (poe === "true_positive_drained" || poe === "true_positive_partial") {
+                return (
+                  <Badge colorPalette="red" variant="solid" title={`Rescue-prove confirmed: ${poe}`}>
+                    DRAINABLE{poeUsd != null && poeUsd > 0 ? ` ($${poeUsd.toFixed(2)})` : ""}
+                  </Badge>
+                );
+              }
+              if (poe === "requires_flashloan_helper") {
+                return (
+                  <Badge colorPalette="blue" variant="solid" title="Requires deployed flashloan receiver for live rescue">
+                    needs flashloan setup
+                  </Badge>
+                );
+              }
+              if (isOwnerOnly || poeAk === "owner") {
+                return (
+                  <Badge colorPalette="orange" variant="subtle" title="Only the contract owner/admin can trigger this — not attacker-exploitable">
+                    admin-only
+                  </Badge>
+                );
+              }
+              // any-caller but PoE couldn't drain
+              return (
+                <Badge colorPalette="yellow" variant="subtle" title={`Simulation proved routability but rescue-prove couldn't extract value: ${poe}`}>
+                  not drainable
+                </Badge>
+              );
+            }
+
+            // No PoE yet — show simulation status only
             const palette = isOwnerOnly ? "orange" : SIM_COLOR_MAP[f.simulation_status] ?? "gray";
             const label = isOwnerOnly
-              ? "owner-only exploit"
+              ? "admin-only (sim)"
               : f.simulation_status === "verified"
-                ? "exploitable (any caller)"
+                ? "unproven (sim only)"
                 : f.simulation_status === "not_exploitable"
                   ? "FP"
                   : f.simulation_status;
             return (
               <Badge
                 colorPalette={palette}
-                variant={f.simulation_status === "verified" ? "solid" : "subtle"}
-                title={isOwnerOnly ? "Only the contract owner can trigger this — risk depends on owner key safety" : undefined}
+                variant={f.simulation_status === "verified" && !isOwnerOnly ? "outline" : "subtle"}
+                title={isOwnerOnly ? "Only the contract owner can trigger this — risk depends on owner key safety" : "Simulation verified but no drain proof yet"}
               >
-                sim: {label}
+                {label}
               </Badge>
             );
           })()}

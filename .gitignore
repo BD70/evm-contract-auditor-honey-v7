@@ -1,44 +1,13 @@
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-runner-state/
-*.pyc
-*.pyo
-*.sqlite3
-
-# Environment & secrets
-.env
-chains.json
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Node
 node_modules/
-bun.lock
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Build artifacts
-dist/
-build/
-*.egg-info/
-*.tsbuildinfo
-panel/.next/
-panel/dev.db*
-panel/runs.db*
-
-# Agent/cursor local state
-.cursor/
-.claude/
-.agents/
-agent-transcripts/
-terminals/
-mcps/
+.next/
+.env
+panel/.env
+panel/data/*.db
+panel/data/*.db-*
+panel/data/cache/
+panel/data/uploads/
+*.zip
+.DS_Store
+/tmp/
+contracts/rescue/out/
+contracts/rescue/cache/

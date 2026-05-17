@@ -134,7 +134,8 @@ export async function POST(req: Request) {
     (row.ruleId.startsWith("call.") ||
       row.ruleId.startsWith("control.unguarded_selfdestruct") ||
       row.ruleId.startsWith("init.") ||
-      row.ruleId.startsWith("economic.")) &&
+      row.ruleId.startsWith("economic.") ||
+      row.ruleId.startsWith("proxy.")) &&
     String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() !== "false";
   if (rescueEligible) {
     try {
