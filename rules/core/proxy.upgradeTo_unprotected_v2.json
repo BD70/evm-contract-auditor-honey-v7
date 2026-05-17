@@ -1,0 +1,148 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "proxy.upgradeTo_unprotected_v2",
+    "internal_name": "reference_proxy_upgradeTo_unprotected_bytecode_v2",
+    "title": "ERC-1967 proxy/implementation exposes upgradeTo without a strong upgrade guard (bytecode evidence)",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "contract",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.78,
+      "with_witness": 0.92,
+      "inconclusive": 0.45
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unprotected_proxy_upgrade",
+    "attack_thesis": "Runtime bytecode embeds the ERC-1967 implementation slot constant AND exposes an upgradeTo / upgradeToAndCall selector while no strong upgrade-authorization framework (Ownable2Step, AccessControl, TimelockController, two-step upgrade acceptance) is detected. The contract also performs delegatecall, so a successful impl-pointer swap pivots execution into attacker code on the next proxy call. This is the bytecode-evidence variant of proxy.unprotected_implementation_upgrade and fires regardless of whether the storage modeler resolves the impl slot.",
+    "protected_asset_or_effect": [
+      "code_execution_authority",
+      "proxy_integrity"
+    ],
+    "exploit_model": "single_or_multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [
+      "ERC-1967",
+      "PROXY_UPGRADE_SELECTORS"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [
+      "delegatecall"
+    ],
+    "economic_effect_any": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER",
+      "TWO_STEP_UPGRADE",
+      "two_step_acceptance_by_new_admin",
+      "COMPOUND_UNITROLLER",
+      "GNOSIS_SAFE_PROXY",
+      "EIP2535_DIAMOND"
+    ],
+    "downgrade_if_any": [
+      "OZ_OWNABLE",
+      "ownership_pattern",
+      "owner_check"
+    ],
+    "inconclusive_if_any": [
+      "partial_proxy_layout"
+    ],
+    "manual_review_if_any": [
+      "custom_proxy_pattern"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "dataflow_trace"
+    ],
+    "witness_generation": {
+      "native": "tag_set_match",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.5,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 100,
+    "max_unresolved_selector_count": 100,
+    "max_unresolved_paths": 100,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": false
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/proxy_upgrade",
+    "positive_fixtures_min": 1,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "erc1967_public_upgrade_positive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Implementation contract exposes upgradeTo without a strong upgrade guard (bytecode evidence)",
+    "summary": "Bytecode contains the ERC-1967 implementation slot constant and an upgradeTo / upgradeToAndCall selector, the contract performs delegatecall, but no strong upgrade-authorization framework was identified.",
+    "user_summary": "The contract appears to be the logic side of an ERC-1967 proxy and exposes an upgrade entrypoint without a strong upgrade guard. An attacker who can reach the upgrade function may be able to swap the proxy's implementation to malicious code, which the proxy will then delegatecall into.",
+    "technical_summary": "Bytecode-level evidence: the runtime PUSH32-embeds the EIP-1967 implementation slot constant (0x360894a1...382bbc) and contains the upgradeTo(address) selector (0x3659cfe6) or upgradeToAndCall(address,bytes) selector (0x4f1ef286). None of the strong upgrade-guard frameworks (Ownable2Step / AccessControl / TimelockController / two-step acceptance) are detected. This is the bytecode-pattern variant of proxy.unprotected_implementation_upgrade and fires on tag-set match without depending on the storage modeler resolving the impl slot.",
+    "exploit_narrative": "The attacker locates the upgradeTo entrypoint, calls it with an attacker-controlled implementation contract, and immediately triggers a proxy delegatecall that lands in the malicious implementation. The proxy's execution authority is lost.",
+    "exploit_preconditions": [
+      "upgrade function is externally callable",
+      "no strong upgrade-authorization framework gates the call"
+    ],
+    "remediation_hints": [
+      "wrap upgrade entrypoints in OpenZeppelin Ownable2Step / AccessControl / TimelockController",
+      "adopt a two-step upgrade acceptance pattern",
+      "emit upgrade events and enforce implementation allowlists"
+    ],
+    "sarif": {
+      "taxa": [
+        "proxy",
+        "upgradeability"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "upgrade function is externally reachable",
+      "no strong upgrade guard"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call upgradeTo passing attacker-controlled implementation address",
+        "expected_state": "EIP-1967 implementation slot updated to malicious contract"
+      }
+    ],
+    "success_condition": "implementation slot contains attacker-controlled address; subsequent proxy calls delegate to malicious contract",
+    "environment_requirements": [
+      "deployed proxy or implementation contract"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}
