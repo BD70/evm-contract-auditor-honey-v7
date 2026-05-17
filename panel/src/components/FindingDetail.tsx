@@ -13,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { fmtTs, fmtNativeAmount, fmtTokenAmount, fmtUsd, SEVERITY_COLORS, shortHash } from "@/src/lib/format";
 import { chainName } from "@/src/lib/chains";
+import { explorerAddressUrl } from "@/src/lib/chain-meta";
 import { EvidenceRenderer, CounterEvidenceRenderer } from "./EvidenceRenderer";
 import { JsonView } from "./JsonView";
 
@@ -217,11 +218,27 @@ export function FindingDetail({ id }: { id: string }) {
         </HStack>
         <HStack gap="3" mt="2" wrap="wrap">
           <Text fontSize="xs" color="fg.muted">discovered {fmtTs(f.discovered_at)}</Text>
-          {f.contract_address && (
-            <Text fontSize="xs" color="fg.muted" fontFamily="mono">
-              contract {shortHash(f.contract_address, 10, 6)}
-            </Text>
-          )}
+          {f.contract_address && (() => {
+            const url = explorerAddressUrl(f.chain_id, f.contract_address);
+            const label = `contract ${shortHash(f.contract_address, 10, 6)}`;
+            return url ? (
+              <Text fontSize="xs" fontFamily="mono">
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "var(--chakra-colors-blue-fg)", textDecoration: "underline" }}
+                  title={`Open ${f.contract_address} on block explorer (new tab)`}
+                >
+                  {label} ↗
+                </a>
+              </Text>
+            ) : (
+              <Text fontSize="xs" color="fg.muted" fontFamily="mono">
+                {label}
+              </Text>
+            );
+          })()}
           <Text fontSize="xs" color="fg.muted">{chainName(f.chain_id)}</Text>
           {f.block_number != null && <Text fontSize="xs" color="fg.muted">block {f.block_number}</Text>}
           {f.bytecode_hash && (
@@ -978,8 +995,10 @@ interface PoeResp {
 function ProofOfExploitPanel({ findingId }: { findingId: string }) {
   const [data, setData] = useState<PoeResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [rescueBusy, setRescueBusy] = useState(false);
+  const [rescueBusy, setRescueBusy] = useState<null | "dry-run-fork" | "dry-run-sign" | "live">(null);
   const [rescueResult, setRescueResult] = useState<string | null>(null);
+  const [confirmLive, setConfirmLive] = useState(false);
+  const [authToken, setAuthToken] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -996,29 +1015,50 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
     };
   }, [findingId]);
 
-  const handleDryRun = async () => {
-    setRescueBusy(true);
+  const refresh = () =>
+    fetch(`/api/proofs/${findingId}`)
+      .then((r) => r.json())
+      .then((j) => setData(j))
+      .catch(() => null);
+
+  const runRescue = async (mode: "dry-run-fork" | "dry-run-sign" | "live") => {
+    setRescueBusy(mode);
     setRescueResult(null);
     try {
+      const body: any = { mode };
+      if (mode === "live") body.authToken = authToken;
       const r = await fetch(`/api/proofs/${findingId}/rescue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "dry-run-fork" }),
+        body: JSON.stringify(body),
       });
       const j = await r.json();
-      const ok = j.results?.filter((x: any) => !x.error).length ?? 0;
-      const total = j.results?.length ?? 0;
-      setRescueResult(
-        j.ok
-          ? `Fork dry-run: ${ok}/${total} steps succeeded; rescue is reproducible.`
-          : `Fork dry-run: ${ok}/${total} steps succeeded. ${j.error ?? "see actions log for details."}`,
-      );
-      // refresh actions
-      fetch(`/api/proofs/${findingId}`).then((r) => r.json()).then((j2) => setData(j2));
+      if (j.error) {
+        setRescueResult(`error: ${j.error}`);
+      } else {
+        const ok = j.results?.filter((x: any) => !x.error).length ?? 0;
+        const total = j.results?.length ?? 0;
+        const txList = (j.results ?? [])
+          .filter((s: any) => s.txHash)
+          .map((s: any) => `  ${s.asset.slice(0, 30)} → ${String(s.txHash).slice(0, 18)}…`)
+          .join("\n");
+        const tag =
+          mode === "live"
+            ? "LIVE BROADCAST"
+            : mode === "dry-run-sign"
+              ? "Signed (not broadcast)"
+              : "Fork dry-run";
+        setRescueResult(
+          `${tag}: ${ok}/${total} step(s) succeeded.${txList ? "\n" + txList : ""}` +
+            (j.ok ? "" : `\n(some steps failed)`),
+        );
+      }
+      await refresh();
     } catch (e: any) {
       setRescueResult(`error: ${String(e?.message ?? e)}`);
     } finally {
-      setRescueBusy(false);
+      setRescueBusy(null);
+      setConfirmLive(false);
     }
   };
 
@@ -1133,14 +1173,95 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             size="xs"
             colorPalette={verdictColor}
             variant="outline"
-            onClick={handleDryRun}
-            loading={rescueBusy}
+            onClick={() => runRescue("dry-run-fork")}
+            loading={rescueBusy === "dry-run-fork"}
             disabled={
-              poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial"
+              rescueBusy != null ||
+              (poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial")
             }
+            title="Re-run the drain plan on a fresh fork. No real chain interaction."
           >
-            Replay drain on fork (dry-run)
+            Dry-run on fork
           </Button>
+          <Button
+            size="xs"
+            colorPalette={verdictColor}
+            variant="ghost"
+            onClick={() => runRescue("dry-run-sign")}
+            loading={rescueBusy === "dry-run-sign"}
+            disabled={
+              rescueBusy != null ||
+              (poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial")
+            }
+            title="Sign each tx locally with RESCUER_PRIVATE_KEY; returns raw payload(s), NO broadcast."
+          >
+            Sign only (no broadcast)
+          </Button>
+          {!confirmLive ? (
+            <Button
+              size="xs"
+              colorPalette="red"
+              variant="solid"
+              onClick={() => setConfirmLive(true)}
+              disabled={
+                rescueBusy != null ||
+                (poe.verdict !== "true_positive_drained" && poe.verdict !== "true_positive_partial")
+              }
+              title="Broadcast the drain plan against mainnet — moves funds to escrow."
+            >
+              Rescue (live)
+            </Button>
+          ) : (
+            <HStack
+              gap="1"
+              border="1px solid"
+              borderColor="red.muted"
+              rounded="md"
+              p="1"
+              bg="red.subtle"
+            >
+              <Text fontSize="2xs" color="red.fg" px="1">
+                broadcast to {data.finding.contractAddress?.slice(0, 8)}… on chain {data.finding.chainId}
+              </Text>
+              <input
+                value={authToken}
+                onChange={(e) => setAuthToken(e.target.value)}
+                placeholder="RESCUE_AUTH_TOKEN"
+                type="password"
+                autoFocus
+                style={{
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  padding: "2px 6px",
+                  width: "200px",
+                  border: "1px solid var(--chakra-colors-red-muted)",
+                  borderRadius: 4,
+                  background: "var(--chakra-colors-bg-canvas)",
+                }}
+              />
+              <Button
+                size="xs"
+                colorPalette="red"
+                variant="solid"
+                onClick={() => runRescue("live")}
+                loading={rescueBusy === "live"}
+                disabled={!authToken || rescueBusy != null}
+              >
+                Confirm broadcast
+              </Button>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => {
+                  setConfirmLive(false);
+                  setAuthToken("");
+                }}
+                disabled={rescueBusy != null}
+              >
+                Cancel
+              </Button>
+            </HStack>
+          )}
           <Button size="xs" variant="ghost" asChild>
             <a href={`/api/proofs/${findingId}/poe.json`} download>
               Download PoE JSON
@@ -1152,7 +1273,15 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
         </HStack>
 
         {rescueResult && (
-          <Text fontSize="xs" color="fg.muted" fontFamily="mono">
+          <Text
+            fontSize="xs"
+            color="fg.muted"
+            fontFamily="mono"
+            whiteSpace="pre-wrap"
+            bg="bg.canvas"
+            p="2"
+            rounded="md"
+          >
             {rescueResult}
           </Text>
         )}

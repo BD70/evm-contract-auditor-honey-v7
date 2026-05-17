@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { fmtAge, fmtNativeAmount, fmtTokenAmount, fmtUsd, shortHash, SEVERITY_COLORS } from "@/src/lib/format";
 import { CHAINS, chainName } from "@/src/lib/chains";
+import { explorerAddressUrl } from "@/src/lib/chain-meta";
 
 interface TokenBalance {
   address: string;
@@ -225,6 +226,50 @@ const SIM_LABEL: Record<string, string> = {
   skipped: "n/a",
   error: "err",
 };
+
+/**
+ * ContractAddressCell — renders the contract's short hash with a one-click
+ * deep-link to the chain's canonical block explorer (Etherscan / BscScan /
+ * PolygonScan / etc). The whole cell is clickable; the external-link arrow
+ * makes the affordance obvious without taking more horizontal space.
+ *
+ * When the chain has no configured explorer (or the address is missing),
+ * we degrade to the plain mono short hash so the column stays consistent.
+ */
+function ContractAddressCell({
+  chainId,
+  address,
+}: {
+  chainId: number | null;
+  address: string | null;
+}) {
+  const url = explorerAddressUrl(chainId, address);
+  if (!url || !address) {
+    return (
+      <Text fontSize="xs" fontFamily="mono">
+        {shortHash(address)}
+      </Text>
+    );
+  }
+  return (
+    <Text
+      fontSize="xs"
+      fontFamily="mono"
+      color="blue.fg"
+      _hover={{ textDecoration: "underline", color: "blue.solid" }}
+      title={`Open ${address} on block explorer (new tab)`}
+    >
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {shortHash(address)} ↗
+      </a>
+    </Text>
+  );
+}
 
 function SimCell({ row }: { row: Row }) {
   const s = row.simulationStatus;
@@ -483,9 +528,7 @@ export function FindingsTable() {
                   </Text>
                 </Table.Cell>
                 <Table.Cell>
-                  <Text fontSize="xs" fontFamily="mono">
-                    {shortHash(r.contractAddress)}
-                  </Text>
+                  <ContractAddressCell chainId={r.chainId} address={r.contractAddress} />
                 </Table.Cell>
                 <Table.Cell>
                   <SimCell row={r} />
