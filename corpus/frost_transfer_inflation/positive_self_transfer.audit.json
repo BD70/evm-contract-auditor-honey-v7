@@ -1,0 +1,40 @@
+{
+  "schema": "evm-audit.behavior",
+  "schema_version": "1.0.0",
+  "engine_version": "1.0.0",
+  "ruleset_version": "1.0.0",
+  "bytecode_identity": {"keccak256": "0xfrostp2", "original_keccak256": "0xfrostp2", "runtime_keccak256": "0xfrostp2", "metadata_stripped_keccak256": "0xfrostp2"},
+  "bytecode": {"analysis_hash": "0xfrostp2"},
+  "contract": {"family": "ERC20", "protocol_roles": ["ERC20"], "selectors": {"resolved": [], "unresolved": ["0x23b872dd"]}},
+  "functions": [
+    {
+      "identity": {"selector": "0x23b872dd", "name": null, "candidate_names": []},
+      "actions": [{"id": "b0", "type": "SSTORE", "offset": "0x0200", "block": 2}, {"id": "b1", "type": "SSTORE", "offset": "0x0210", "block": 2}, {"id": "b2", "type": "SSTORE", "offset": "0x0220", "block": 2}, {"id": "b3", "type": "SSTORE", "offset": "0x0230", "block": 2}],
+      "state": {"reads": [], "writes": [], "semantic_summary": {"reads": ["_allowances[from][msg.sender]", "_balances[from]", "transferFee"], "writes": ["_allowances[from][msg.sender] <- _allowances[from][msg.sender] - amount", "_balances[avalancheAddress] <- _balances[avalancheAddress] + transferFeeAmount", "_balances[from] <- _balances[from] - tokensToTransfer", "_balances[to] <- _balances[to] + tokensToTransfer"], "events": ["Transfer", "Approval"], "guards": []}},
+      "memory": {"reads": [], "writes": []},
+      "external_calls": [],
+      "arithmetic": [],
+      "accounting": [{"id": "acc1", "kind": "transfer_accounting_summary", "path_id": "0x23b872dd:path:summary", "gross_amount": "amount", "fee_amount": "transferFeeAmount", "net_amount": "tokensToTransfer", "proved_relation": "tokensToTransfer = amount - transferFeeAmount", "sender_debit": "tokensToTransfer", "recipient_credit": "tokensToTransfer", "fee_credit": "transferFeeAmount", "side_credits": [{"party": "fee", "target": "avalancheAddress", "amount": "transferFeeAmount", "action_id": "b1"}], "sum_of_credits": "tokensToTransfer + transferFeeAmount", "net_mismatch": "transferFeeAmount", "supply_delta": "0", "balance_sum_delta": "transferFeeAmount", "invariant": "sum(balanceOf) == totalSupply", "post_invariant_delta": "transferFeeAmount", "mismatch_relation": "credits_equal_sender_debit_plus_side_credit", "behavior_tags": ["sender_debit_present", "recipient_credit_present", "side_credit_present", "total_supply_unchanged", "credit_exceeds_sender_debit", "net_mismatch_positive", "net_amount_relation_proven"], "economic_effects": ["balance_inflation_without_supply_change"], "evidence_refs": {"sender_debit_action": "b2", "recipient_credit_action": "b3", "fee_credit_action": "b1", "side_credit_actions": ["b1"], "total_supply_nonwrite_proof": "state_model:evidence:no_totalSupply_write:0x23b872dd:path:summary"}}],
+      "flows": [],
+      "guards": [],
+      "events": ["Transfer", "Approval"],
+      "loops": [],
+      "path_conditions": [],
+      "behavior_tags": ["balance_accounting", "sender_debit_present", "recipient_credit_present", "side_credit_present", "total_supply_unchanged", "credit_exceeds_sender_debit", "net_mismatch_positive", "net_amount_relation_proven", "balance_inflation_without_supply_change"],
+      "confidence": 0.91,
+      "paths": [{"id": "0x23b872dd:path:summary", "entry_block": 2, "blocks": [2], "branch_count": 0, "revert_count": 0, "return_count": 1}]
+    }
+  ],
+  "storage": {"layout": [], "reads": [], "writes": []},
+  "memory": {"reads": [], "writes": []},
+  "arithmetic": {"facts": [], "summary": {"count": 0, "fixed_point_floor_count": 0, "precision_loss_candidates": 0}},
+  "calls": [],
+  "events": [],
+  "flows": [],
+  "invariants": [],
+  "assumptions": [],
+  "analysis_warnings": [],
+  "coverage": {"function_count": 1, "functions_with_actions": 1, "function_coverage": 0.94, "unresolved_selector_count": 1, "unknown_action_expression_count": 0, "unresolved_path_count": 0, "storage_role_confidence": 0.85, "path_reachability_confidence": 0.89, "has_unmodeled_terminators": false, "action_count": 4},
+  "state_model": {"schema": "evm-audit.state_model.v1", "schema_version": "1.0.0", "storage_entities": [], "slot_index": [], "path_index": [{"id": "0x23b872dd:path:summary", "function": "0x23b872dd", "guard_refs": [], "reachable_effects": ["balance_inflation_without_supply_change"], "authorized_path_effects": [], "reachability_confidence": 0.91}], "guard_catalog": [], "call_index": [], "economic_index": [{"id": "acc1", "function": "0x23b872dd", "kind": "transfer_accounting_summary", "path_id": "0x23b872dd:path:summary", "gross_amount": "amount", "fee_amount": "transferFeeAmount", "net_amount": "tokensToTransfer", "proved_relation": "tokensToTransfer = amount - transferFeeAmount", "sender_debit": "tokensToTransfer", "recipient_credit": "tokensToTransfer", "fee_credit": "transferFeeAmount", "side_credits": [{"party": "fee", "target": "avalancheAddress", "amount": "transferFeeAmount", "action_id": "b1"}], "sum_of_credits": "tokensToTransfer + transferFeeAmount", "net_mismatch": "transferFeeAmount", "supply_delta": "0", "balance_sum_delta": "transferFeeAmount", "invariant": "sum(balanceOf) == totalSupply", "post_invariant_delta": "transferFeeAmount", "mismatch_relation": "credits_equal_sender_debit_plus_side_credit", "effects": ["balance_inflation_without_supply_change"], "evidence_refs": {"sender_debit_action": "b2", "recipient_credit_action": "b3", "fee_credit_action": "b1", "side_credit_actions": ["b1"], "total_supply_nonwrite_proof": "state_model:evidence:no_totalSupply_write:0x23b872dd:path:summary"}}], "proxy_index": [], "initializer_index": [], "evidence_index": [{"id": "b0", "kind": "action", "function": "0x23b872dd", "offset": "0x0200"}, {"id": "b1", "kind": "action", "function": "0x23b872dd", "offset": "0x0210"}, {"id": "b2", "kind": "action", "function": "0x23b872dd", "offset": "0x0220"}, {"id": "b3", "kind": "action", "function": "0x23b872dd", "offset": "0x0230"}, {"id": "state_model:evidence:no_totalSupply_write:0x23b872dd:path:summary", "kind": "negative_proof", "function": "0x23b872dd", "path_id": "0x23b872dd:path:summary", "detail": "no totalSupply write observed on matched path"}]},
+  "checker_findings": []
+}

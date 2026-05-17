@@ -1,0 +1,194 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "call.arbitrary_external_call_unvalidated_target",
+    "internal_name": "reference_generic_arbitrary_external_call_unvalidated_target_v1",
+    "title": "Caller-supplied address invoked with caller-supplied calldata and no allowlist (arbitrary external call)",
+    "category": "access_control",
+    "severity": "high",
+    "scope": "contract",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.78,
+      "with_witness": 0.93,
+      "inconclusive": 0.38
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence",
+      "external_call_resolution_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "arbitrary_external_call",
+    "attack_thesis": "A public function forwards an external call whose target address AND calldata both originate from the caller, gated only by a blocklist-style inequality check (e.g. require(target != ownGateway)) rather than an allowlist or registry. An attacker passes any token/contract as the target and arbitrary calldata (approve/transfer/transferFrom), making the victim contract act under its own identity — granting attacker allowances, draining residual balances, or abusing any trust placed in the contract address.",
+    "protected_asset_or_effect": [
+      "asset_transfer",
+      "call_value_forwarding",
+      "delegated_contract_identity",
+      "reentrancy_surface"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [],
+    "flows_all": [],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "arbitrary_calldata_external_call",
+        "match": {
+          "external_call": {
+            "target_origin_any": [
+              "calldata"
+            ],
+            "target_controllability": "caller_controlled",
+            "address_validation": "none",
+            "return_value_consumed": true,
+            "return_flow_effect_any": [
+              "asset_transfer",
+              "call_value_forwarding",
+              "accounting_mutation"
+            ]
+          },
+          "reachable_effect_any": [
+            "asset_transfer",
+            "call_value_forwarding",
+            "accounting_mutation"
+          ]
+        },
+        "bind": {
+          "target": "$call_target",
+          "path": "$call_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "registry_guard",
+      "allowlist_guard",
+      "factory_deployed_check",
+      "onchain_registry_lookup",
+      "AUTH_GUARDED",
+      "STRONG_AUTH_GUARD",
+      "OZ_ACCESS_CONTROL",
+      "authorization_guard",
+      "tx_origin_whitelist",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "PROXY_FORWARDING_PATTERN",
+      "proxy_safe_delegatecall"
+    ],
+    "downgrade_if_any": [
+      "partial_return_value_validation",
+      "DIAMOND_PROXY",
+      "GNOSIS_SAFE",
+      "COMPOUND_UNITROLLER"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_call_target_origin"
+    ],
+    "manual_review_if_any": [
+      "factory_or_dispatcher_pattern"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "call_target_origin_trace",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 100,
+    "max_unresolved_selector_count": 30,
+    "max_unresolved_paths": 20,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/arbitrary_external_call_unvalidated_target",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "calldata_target_and_calldata_data_blocklist_only_positive",
+      "allowlist_guarded_target_negative",
+      "unresolved_target_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Arbitrary external call: caller controls both target and calldata with no allowlist",
+    "summary": "Matches contracts that forward an external CALL whose target address comes from calldata with no allowlist/registry validation, letting an attacker make the contract call any function on any address.",
+    "user_summary": "A public function lets the caller choose which contract to call and what data to send, with no allowlist restricting the target. An attacker can make this contract call approve()/transfer()/transferFrom() on any token, granting themselves allowances or draining funds the contract holds, and can leverage the contract's identity against any protocol that trusts it.",
+    "technical_summary": "The detector matches call_index entries where target_origin=calldata, target_controllability=caller_controlled and address_validation=none. A single inequality blocklist check (require(target != X)) does not constitute validation and does not suppress this finding; only an allowlist, registry, factory-deployment check, or strong authorization guard does. This is the root pattern behind the Symbiosis MetaRouter/OnchainSwap arbitrary-call class: relayRecipient.call(otherSideCalldata) / dex.call{value:..}(calldata_).",
+    "exploit_narrative": "The attacker calls the vulnerable function passing a target token address and abi-encoded approve(attacker, MAX) (or transfer(attacker, balance)) as the calldata. The contract issues the call under its own identity, granting the attacker an unlimited allowance or moving residual balances. With approvals in place the attacker later calls transferFrom(contract, attacker, amount). The same primitive can redirect tokens atomically inside an attacker-crafted multicall.",
+    "exploit_preconditions": [
+      "function accepts a calldata-derived address used as an external call target",
+      "function accepts caller-supplied bytes used as the call's calldata",
+      "no allowlist/registry/factory/role guard validates the target (blocklist != check is insufficient)",
+      "attacker can call the function"
+    ],
+    "remediation_hints": [
+      "validate the call target against an on-chain allowlist or registry before calling",
+      "replace the raw address parameter with an id indexed into a trusted mapping",
+      "never forward attacker-supplied calldata to an attacker-supplied address",
+      "if integrating fixed protocols, hardcode them or use explicit typed interface calls"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "external_call"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "CALL target derived from calldata with no allowlist check",
+      "CALL data derived from calldata"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call function with target=ERC20 token and calldata=approve(attacker, MAX_UINT256)",
+        "expected_state": "contract executes token.approve(attacker, MAX) under its own identity"
+      },
+      {
+        "actor": "attacker",
+        "action": "call token.transferFrom(contract, attacker, balance)",
+        "expected_state": "attacker drains any balance the contract holds for that token"
+      }
+    ],
+    "success_condition": "attacker holds an unlimited allowance from the contract and/or receives forwarded value or token balances",
+    "environment_requirements": [
+      "deployed victim contract",
+      "any ERC20 token the contract holds or will hold"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 400000
+    }
+  }
+}

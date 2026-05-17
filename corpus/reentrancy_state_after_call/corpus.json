@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "reentrancy.state_after_external_call",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "write_after_call_positive",
+      "audit_json": "positive_write_after_call.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "reentrancy.state_after_external_call"
+        ]
+      }
+    },
+    {
+      "id": "delegatecall_write_positive",
+      "audit_json": "positive_delegatecall.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "reentrancy.state_after_external_call"
+        ]
+      }
+    },
+    {
+      "id": "cei_pattern_negative",
+      "audit_json": "negative_cei_pattern.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "reentrancy.state_after_external_call"
+        ]
+      }
+    },
+    {
+      "id": "reentrancy_guard_negative",
+      "audit_json": "negative_reentrancy_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "reentrancy.state_after_external_call"
+        ]
+      }
+    },
+    {
+      "id": "low_coverage_inconclusive",
+      "audit_json": "inconclusive_low_coverage.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "reentrancy.state_after_external_call"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "token.transfer.sender_debit_credit_mismatch",
+    "internal_name": "reference_frost_sender_debit_credit_mismatch_v1",
+    "title": "Transfer credits exceed sender debit without a supply update",
+    "category": "accounting_invariant",
+    "severity": "critical",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.81,
+      "with_witness": 0.96,
+      "inconclusive": 0.39
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "transfer_accounting_inflation",
+    "attack_thesis": "A transfer path credits more aggregate balance than it debits from the sender while total supply remains unchanged, creating repeatable token inflation.",
+    "protected_asset_or_effect": [
+      "token_accounting_integrity",
+      "total_supply_integrity"
+    ],
+    "exploit_model": "single_tx_repeatable"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "sender_debit_present",
+      "recipient_credit_present",
+      "side_credit_present",
+      "total_supply_unchanged",
+      "credit_exceeds_sender_debit",
+      "net_mismatch_positive",
+      "net_amount_relation_proven"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [
+      "balance_inflation_without_supply_change"
+    ],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "total_supply_updated_consistently",
+      "credits_fully_backed_by_sender_debit",
+      "total_supply_delta_matches_balance_delta",
+      "mint_event_matches_side_credit"
+    ],
+    "downgrade_if_any": [
+      "single_use_bootstrap_transfer"
+    ],
+    "inconclusive_if_any": [
+      "accounting_path_unresolved"
+    ],
+    "manual_review_if_any": [
+      "rebasing_or_virtual_balance_model",
+      "documented_rebase_or_reflection_accounting",
+      "reflection_token_detected",
+      "rebasing_token_detected"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "deterministic_accounting_witness",
+    "acceptable_witnesses": [
+      "deterministic_accounting_witness",
+      "symbolic_counterexample"
+    ],
+    "witness_generation": {
+      "native": "transfer_accounting_summary",
+      "optional_adapters": [
+        "mythril",
+        "halmos",
+        "echidna"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.85,
+    "min_storage_role_confidence": 0.75,
+    "min_path_reachability_confidence": 0.75,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 24,
+    "max_unresolved_paths": 8,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/frost_transfer_inflation",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "frost_fee_transfer_positive",
+      "self_transfer_positive",
+      "standard_transfer_negative",
+      "correct_fee_on_transfer_negative",
+      "mint_backed_fee_negative",
+      "partial_accounting_inconclusive",
+      "weak_path_inconclusive",
+      "reflection_review_inconclusive",
+      "real_frost_runtime_positive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Transfer inflates balances without updating total supply",
+    "summary": "Matches a transfer accounting summary where credited balances exceed the sender debit while supply remains unchanged, with a deterministic accounting witness attached.",
+    "user_summary": "This token's transfer logic can create extra balances without increasing total supply. In practice, one transfer can credit both the recipient and a fee destination, while only subtracting the net amount from the sender, which lets supply accounting drift and can be abused repeatedly.",
+    "technical_summary": "The matched path credits a side recipient with transferFeeAmount, credits the recipient with tokensToTransfer, debits the sender by only tokensToTransfer, and leaves totalSupply unchanged. That means aggregate credits exceed the sender debit by transferFeeAmount, creating balance inflation without a supply update.",
+    "exploit_narrative": "An attacker uses a normal transfer or transferFrom path that applies a fee. The contract credits the fee destination and the recipient, but the sender loses only the post-fee amount. Because totalSupply is not updated, each transfer introduces an accounting mismatch equal to the fee amount, and the mismatch can accumulate across repeated transfers.",
+    "exploit_preconditions": [
+      "an externally reachable transfer-like path updates token balances",
+      "the path credits a side recipient or fee recipient in addition to the net recipient",
+      "the engine proves the net transfer amount is the gross amount minus the fee amount",
+      "the sender debit omits the credited side amount",
+      "the same path does not update total supply"
+    ],
+    "remediation_hints": [
+      "debit the sender by the full transfer amount before splitting recipient and fee credits",
+      "treat fee transfers as a partition of one sender debit, not as an extra balance credit",
+      "keep total supply unchanged only when debits and credits net to zero"
+    ],
+    "sarif": {
+      "taxa": [
+        "accounting",
+        "erc20"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "contract has token transfer function with asymmetric debit/credit"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call transfer function exploiting imbalanced debit/credit accounting",
+        "expected_state": "sender balance debited by X but recipient credited by Y where Y > X or X is skipped"
+      }
+    ],
+    "success_condition": "attacker creates tokens from nothing or avoids burning tokens on transfer",
+    "environment_requirements": [
+      "deployed token contract",
+      "attacker account with some balance"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 500000
+    }
+  }
+}

@@ -1,0 +1,173 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "call.user_controlled_external_target",
+    "internal_name": "reference_generic_user_controlled_external_target_v1",
+    "title": "External call target derived from calldata without allowlist or registry guard",
+    "category": "access_control",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.76,
+      "with_witness": 0.92,
+      "inconclusive": 0.38
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "arbitrary_external_call",
+    "attack_thesis": "An external call target address is derived directly from calldata without validation against an allowlist or registry, enabling an attacker to redirect calls to arbitrary contracts and exploit value forwarding, callback logic, or reentrancy.",
+    "protected_asset_or_effect": [
+      "asset_transfer",
+      "call_value_forwarding",
+      "reentrancy_surface"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation",
+      "untrusted_interface_call"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "calldata_to_call_target",
+        "match": {
+          "call": {
+            "target_origin": "calldata",
+            "caller_reachability": "external_untrusted",
+            "caller_constraint": "missing_or_weak"
+          }
+        },
+        "bind": {
+          "target": "$call_target",
+          "path": "$call_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "registry_guard",
+      "allowlist_guard",
+      "factory_deployed_check",
+      "onchain_registry_lookup",
+      "AUTH_GUARDED",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD",
+      "OZ_ACCESS_CONTROL",
+      "KNOWN_SAFE_PROXY_PATTERN"
+    ],
+    "downgrade_if_any": [
+      "partial_return_value_validation",
+      "OZ_OWNABLE",
+      "OZ_OWNABLE2STEP"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_call_target_origin"
+    ],
+    "manual_review_if_any": [
+      "factory_or_dispatcher_pattern"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "call_target_origin_trace",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.7,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 40,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/user_controlled_external_target",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "calldata_target_no_guard_positive",
+      "registry_checked_target_negative",
+      "unresolved_target_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Arbitrary external call target supplied via calldata without allowlist guard",
+    "summary": "Matches functions where an external CALL target address comes from calldata without a registry or allowlist guard.",
+    "user_summary": "This function allows callers to specify any contract as the target of an external call. An attacker can pass their own contract address, causing the victim to call attacker-controlled code and potentially forward value or expose sensitive callbacks.",
+    "technical_summary": "The detector matches call_index entries where target_origin=calldata and caller_constraint=missing_or_weak, with no allowlist, registry, or role guard suppressing the finding. This is the primary source of arbitrary-send and callback-based exploits.",
+    "exploit_narrative": "The attacker calls the victim function and supplies their malicious contract as the call target. The victim contract then issues an external call to the attacker's contract, potentially forwarding ETH, exposing sensitive data, or triggering a reentrancy callback.",
+    "exploit_preconditions": [
+      "function accepts calldata-derived address as call target",
+      "no allowlist or registry validates the target address",
+      "attacker can call the function"
+    ],
+    "remediation_hints": [
+      "validate call targets against an on-chain allowlist or registry",
+      "restrict which addresses can be passed as call targets using role-based access control",
+      "consider whether the call target should be a hardcoded trusted address instead"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "external_call"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "CALL target is derived from calldata without allowlist check"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call function passing attacker-controlled address as call target",
+        "expected_state": "contract issues CALL to attacker-controlled contract forwarding value or sensitive data"
+      }
+    ],
+    "success_condition": "attacker receives forwarded value/data or executes callback code in victim context",
+    "environment_requirements": [
+      "attacker-controlled contract",
+      "deployed victim contract"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "init.public_initializer_takeover",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "public_initializer_takeover_owner_positive",
+      "audit_json": "positive_owner.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "init.public_initializer_takeover"
+        ]
+      }
+    },
+    {
+      "id": "public_initializer_takeover_admin_positive",
+      "audit_json": "positive_admin.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "init.public_initializer_takeover"
+        ]
+      }
+    },
+    {
+      "id": "single_use_initializer_negative",
+      "audit_json": "negative_single_use.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "init.public_initializer_takeover"
+        ]
+      }
+    },
+    {
+      "id": "factory_initializer_negative",
+      "audit_json": "negative_factory.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "init.public_initializer_takeover"
+        ]
+      }
+    },
+    {
+      "id": "clone_initializer_inconclusive",
+      "audit_json": "inconclusive_clone.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "init.public_initializer_takeover"
+        ]
+      }
+    }
+  ]
+}

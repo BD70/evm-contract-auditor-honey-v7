@@ -1,0 +1,114 @@
+{
+  "schema": "evm-audit.decon-parity.v1",
+  "description": "Curated runtime-hex fixtures for Python<->Go decon feature parity. Detection in known_bytecodes is substring-based, so these compact fixtures exercise each fingerprint class deterministically on both implementations.",
+  "fixtures": [
+    {
+      "file": "erc1167_clone.hex",
+      "description": "EIP-1167 minimal proxy clone (canonical runtime).",
+      "expect_tokens": ["ERC1167_CLONE"],
+      "parity_include": true
+    },
+    {
+      "file": "oz_ownable2step_erc1967.hex",
+      "description": "OZ Ownable + Ownable2Step + AccessControl selectors over an ERC-1967 forwarding proxy.",
+      "expect_tokens": ["ERC1967_PROXY", "OZ_OWNABLE", "OZ_OWNABLE2STEP", "OZ_ACCESS_CONTROL", "two_step_acceptance_by_new_admin", "role_admin_guard"],
+      "parity_include": true
+    },
+    {
+      "file": "oz_access_control.hex",
+      "description": "OZ AccessControl (>=3 role selectors) + Ownable selectors.",
+      "expect_tokens": ["OZ_ACCESS_CONTROL", "OZ_OWNABLE", "role_admin_guard"],
+      "parity_include": true
+    },
+    {
+      "file": "reentrancy_guard.hex",
+      "description": "OZ ReentrancyGuard constant pattern (PUSH1 01 SSTORE / PUSH1 02 SSTORE).",
+      "expect_tokens": ["OZ_REENTRANCY_GUARD"],
+      "parity_include": true
+    },
+    {
+      "file": "safe_erc20.hex",
+      "description": "SafeERC20 return-data check pattern (CALL -> RETURNDATASIZE -> ISZERO).",
+      "expect_tokens": ["SAFE_ERC20_USAGE", "safeTransfer"],
+      "parity_include": true
+    },
+    {
+      "file": "uups_proxy.hex",
+      "description": "UUPS proxiableUUID selector + ERC-1967 impl slot + forwarding.",
+      "expect_tokens": ["EIP1822_UUPS", "ERC1967_PROXY"],
+      "parity_include": true
+    },
+    {
+      "file": "diamond_proxy.hex",
+      "description": "EIP-2535 Diamond loupe selectors + diamondCut.",
+      "expect_tokens": ["DIAMOND_PROXY"],
+      "parity_include": true
+    },
+    {
+      "file": "gnosis_safe.hex",
+      "description": "Gnosis Safe masterCopy/setup + slot-0 delegatecall.",
+      "expect_tokens": ["GNOSIS_SAFE_PROXY"],
+      "parity_include": true
+    },
+    {
+      "file": "oz_timelock.hex",
+      "description": "OZ TimelockController getMinDelay + schedule/execute.",
+      "expect_tokens": ["OZ_TIMELOCK_CONTROLLER", "timelock_or_governance_guard"],
+      "parity_include": true
+    },
+    {
+      "file": "oz_pausable.hex",
+      "description": "OZ Pausable paused() + pause()/unpause().",
+      "expect_tokens": ["OZ_PAUSABLE"],
+      "parity_include": true
+    },
+    {
+      "file": "transparent_proxy.hex",
+      "description": "ERC-1967 impl+admin slots + upgrade/changeAdmin/admin selectors + forwarding (Transparent proxy).",
+      "expect_tokens": ["ERC1967_PROXY"],
+      "parity_include": true
+    },
+    {
+      "file": "beacon_proxy.hex",
+      "description": "ERC-1967 impl+beacon slots + forwarding (Beacon proxy).",
+      "expect_tokens": ["ERC1967_PROXY"],
+      "parity_include": true
+    },
+    {
+      "file": "eip897_proxy.hex",
+      "description": "EIP-897 proxyType() + implementation() + delegatecall.",
+      "expect_tokens": [],
+      "parity_include": true
+    },
+    {
+      "file": "vyper_clone.hex",
+      "description": "Vyper minimal proxy prefix (clone variant).",
+      "expect_tokens": ["ERC1167_CLONE"],
+      "parity_include": true
+    },
+    {
+      "file": "compound_unitroller.hex",
+      "description": "Compound Unitroller two-step upgrade (comptrollerImplementation/_setPendingImplementation/_acceptImplementation).",
+      "expect_tokens": ["COMPOUND_UNITROLLER"],
+      "parity_include": true
+    },
+    {
+      "file": "slot0_proxy.hex",
+      "description": "Generic slot-0 proxy: SLOAD(0) + delegatecall in a fallback-like context.",
+      "expect_tokens": [],
+      "parity_include": true
+    },
+    {
+      "file": "erc20_plain.hex",
+      "description": "Plain ERC-20-style dispatcher (transfer/approve) with no proxy/library fingerprint.",
+      "expect_tokens": [],
+      "parity_include": true
+    },
+    {
+      "file": "plain_no_fingerprint.hex",
+      "description": "Minimal runtime with no known library/proxy pattern (negative case).",
+      "expect_tokens": [],
+      "parity_include": true
+    }
+  ]
+}

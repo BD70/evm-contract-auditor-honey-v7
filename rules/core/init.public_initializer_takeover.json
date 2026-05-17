@@ -1,0 +1,204 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "init.public_initializer_takeover",
+    "internal_name": "reference_generic_public_initializer_takeover_v1",
+    "title": "Public initializer can poison privileged initialization state",
+    "category": "initialization",
+    "severity": "high",
+    "scope": "multi_tx",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.74,
+      "with_witness": 0.91,
+      "inconclusive": 0.38
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "initializer_takeover",
+    "attack_thesis": "An externally reachable setup path can write initialization or privileged role state before a trusted party initializes the contract, and a later privileged path trusts that same state.",
+    "protected_asset_or_effect": [
+      "ownership",
+      "upgrade_authority",
+      "asset_control"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [
+      "asset_transfer",
+      "change_admin",
+      "upgrade_implementation"
+    ],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "poison_initializer",
+        "match": {
+          "storage_write": {
+            "semantic_role_any": [
+              "owner",
+              "admin",
+              "role",
+              "initialized"
+            ],
+            "user_controlled_write_value": true,
+            "caller_reachability": "external_untrusted",
+            "caller_constraint": "missing_or_weak",
+            "write_origin_any": [
+              "calldata",
+              "caller"
+            ],
+            "min_role_confidence": 0.8
+          }
+        },
+        "bind": {
+          "slot": "$slot",
+          "path": "$writer_path"
+        }
+      },
+      {
+        "id": "trust_poisoned_initializer_state",
+        "match": {
+          "storage_read": {
+            "same_slot_as": "$slot",
+            "used_in": "authorization_guard",
+            "min_role_confidence": 0.8
+          },
+          "authorized_path_effect_any": [
+            "asset_transfer",
+            "change_admin",
+            "upgrade_implementation"
+          ]
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "initializer_guard",
+      "factory_only_initializer",
+      "constructor_only_initialization",
+      "already_initialized_revert",
+      "INITIALIZABLE",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "OZ_OWNABLE2STEP"
+    ],
+    "downgrade_if_any": [
+      "manual_bootstrap_review",
+      "DIAMOND_PROXY",
+      "GNOSIS_SAFE_PROXY",
+      "TWO_STEP_UPGRADE",
+      "OZ_ACCESS_CONTROL"
+    ],
+    "inconclusive_if_any": [
+      "clone_factory_initializer",
+      "ERC1167_CLONE"
+    ],
+    "manual_review_if_any": [
+      "deferred_deployment_sequence",
+      "SLOT0_PROXY"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "bound_sequence",
+      "optional_adapters": [
+        "mythril",
+        "halmos"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.85,
+    "min_storage_role_confidence": 0.8,
+    "min_path_reachability_confidence": 0.8,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/init",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "public_initializer_positive",
+      "factory_guard_negative",
+      "single_use_guard_negative",
+      "clone_initializer_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Public initializer takeover via poisoned privileged state",
+    "summary": "Matches externally reachable writes into privileged initialization state when the same state later authorizes a sensitive effect.",
+    "user_summary": "The contract may let an attacker initialize key privileged state before the real deployer or admin does. If that happens, the attacker can take over ownership or upgrade authority during setup.",
+    "technical_summary": "The detector matches an externally reachable initializer-like write into owner, admin, role, or initialized state, then binds the same slot to a later authorization read that unlocks a sensitive effect. It suppresses known safe one-time initializer and factory patterns.",
+    "exploit_narrative": "The attacker races the intended bootstrap flow and calls the setup path first. That call writes trusted initialization or ownership state. Later, normal privileged paths treat the poisoned slot as legitimate and allow the attacker to act as the initialized authority.",
+    "exploit_preconditions": [
+      "attacker can call initialization path before trusted bootstrap",
+      "later privileged path reads the poisoned slot",
+      "sensitive effect is reachable on the trusted branch"
+    ],
+    "remediation_hints": [
+      "enforce a one-time initializer guard with revert-on-repeat semantics",
+      "restrict initialization to factory or trusted bootstrap authority",
+      "separate pending-admin assignment from admin acceptance"
+    ],
+    "sarif": {
+      "taxa": [
+        "initialization"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "contract is deployed",
+      "attacker has an EOA",
+      "initializer function is externally reachable"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call initializer function with attacker-controlled owner/admin argument",
+        "expected_state": "owner/admin slot set to attacker address"
+      }
+    ],
+    "success_condition": "attacker becomes the recognized owner or admin after calling the initializer",
+    "environment_requirements": [
+      "deployed contract with uninitialized state"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

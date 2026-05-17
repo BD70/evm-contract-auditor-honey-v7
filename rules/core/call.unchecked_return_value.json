@@ -1,0 +1,173 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "call.unchecked_return_value",
+    "internal_name": "reference_generic_unchecked_external_call_return_value_v1",
+    "title": "External call return value not checked",
+    "category": "call_safety",
+    "severity": "medium",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.72,
+      "with_witness": 0.91,
+      "inconclusive": 0.35
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unchecked_external_call_return_value",
+    "attack_thesis": "An external CALL or DELEGATECALL whose boolean success return value is never checked can silently fail, leaving the contract in an inconsistent state where storage mutations or accounting updates assume the call succeeded.",
+    "protected_asset_or_effect": [
+      "asset_transfer_integrity",
+      "state_consistency"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "UNCHECKED_RETURN_VALUE"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation",
+      "delegatecall"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "safeTransfer",
+      "SAFE_ERC20_USAGE",
+      "try_catch_pattern",
+      "proxy_admin_guard",
+      "ERC1967_PROXY",
+      "PROXY_FORWARDING_PATTERN",
+      "assembly_return_value_handling",
+      "ADMIN_GUARD",
+      "verified_return_check_cross_block",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "proxy_safe_delegatecall"
+    ],
+    "downgrade_if_any": [
+      "low_value_call",
+      "AUTH_GUARDED",
+      "tx_origin_whitelist",
+      "authorization_guard",
+      "TRANSPARENT_PROXY",
+      "UUPS_PROXY",
+      "BEACON_PROXY",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_return_value_usage",
+      "UNVERIFIED_STATE_WRITE_AFTER_CALL"
+    ],
+    "manual_review_if_any": [
+      "assembly_call_wrapper"
+    ]
+  },
+  "proof": {
+    "min_level": "P2",
+    "preferred_witness": "dataflow_trace",
+    "acceptable_witnesses": [
+      "dataflow_trace",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "call_return_value_flow",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 15,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/unchecked_return_value",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "unchecked_call_basic_positive",
+      "unchecked_delegatecall_positive",
+      "checked_call_negative",
+      "safe_transfer_negative",
+      "low_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Unchecked return value on external call",
+    "summary": "Matches functions containing CALL or DELEGATECALL instructions whose boolean success return value is never consumed by an ISZERO or equivalent check, while the function performs asset transfers or accounting mutations that assume the call succeeded.",
+    "user_summary": "This function makes an external call whose success or failure is never checked. If the call fails silently, the contract continues execution as if it succeeded, potentially leaving balances, accounting, or state in an inconsistent condition that an attacker can exploit.",
+    "technical_summary": "The detector identifies external CALL or DELEGATECALL opcodes where the stack return value (success boolean) is either popped without inspection or never consumed. When such unchecked calls coexist with asset-transfer or accounting-mutation effects on the same path, the function can silently accept a failed call and proceed with state updates that assume success.",
+    "exploit_narrative": "An attacker triggers a function containing an unchecked external call. The callee reverts or returns false (e.g., an ERC-20 transfer that returns false on insufficient balance), but the caller ignores the return value and proceeds to update internal accounting. The attacker repeats this to drain funds or inflate balances without the underlying transfer ever succeeding.",
+    "exploit_preconditions": [
+      "a function performs an external CALL or DELEGATECALL",
+      "the return value (success boolean) is not checked via ISZERO or equivalent branching",
+      "the same execution path performs asset transfers or accounting mutations after the call",
+      "the callee can fail or return false under attacker-controlled conditions"
+    ],
+    "remediation_hints": [
+      "check the return value of every low-level call and revert on failure",
+      "use OpenZeppelin SafeERC20 wrappers (safeTransfer, safeTransferFrom) instead of raw calls",
+      "wrap external calls in try/catch blocks when using Solidity \u22650.6",
+      "use require(success) immediately after any low-level call"
+    ],
+    "sarif": {
+      "taxa": [
+        "call_safety",
+        "error_handling"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "external call return value is not checked",
+      "failed call allows attacker to proceed as if call succeeded"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "trigger call to external contract that returns false or fails silently",
+        "expected_state": "contract continues execution as if external call succeeded, corrupting state or draining funds"
+      }
+    ],
+    "success_condition": "contract state reflects successful operation while external call actually failed",
+    "environment_requirements": [
+      "deployed contract",
+      "external contract that returns false on call"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "control.tx_origin_authentication",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "tx_origin_withdraw_positive",
+      "audit_json": "positive_tx_origin_withdraw.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "control.tx_origin_authentication"
+        ]
+      }
+    },
+    {
+      "id": "tx_origin_selfdestruct_positive",
+      "audit_json": "positive_tx_origin_selfdestruct.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "control.tx_origin_authentication"
+        ]
+      }
+    },
+    {
+      "id": "msg_sender_guard_negative",
+      "audit_json": "negative_msg_sender_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "control.tx_origin_authentication"
+        ]
+      }
+    },
+    {
+      "id": "tx_origin_event_only_negative",
+      "audit_json": "negative_tx_origin_event_only.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "control.tx_origin_authentication"
+        ]
+      }
+    },
+    {
+      "id": "weak_coverage_inconclusive",
+      "audit_json": "inconclusive_weak_coverage.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "control.tx_origin_authentication"
+        ]
+      }
+    }
+  ]
+}

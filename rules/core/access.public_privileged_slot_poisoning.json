@@ -1,0 +1,221 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "access.public_privileged_slot_poisoning",
+    "internal_name": "reference_generic_public_privileged_slot_poisoning_v1",
+    "title": "Public write can poison a privileged slot that later gates sensitive behavior",
+    "category": "access_control",
+    "severity": "high",
+    "scope": "multi_tx",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.76,
+      "with_witness": 0.92,
+      "inconclusive": 0.4
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "privileged_slot_poisoning",
+    "attack_thesis": "An attacker-controlled write reaches a privileged slot, and the same slot later participates in an authorization guard that unlocks a sensitive effect.",
+    "protected_asset_or_effect": [
+      "admin_rights",
+      "asset_transfer",
+      "upgrade_control"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [
+      "asset_transfer",
+      "mint",
+      "burn",
+      "withdraw",
+      "change_admin",
+      "upgrade_implementation",
+      "delegatecall",
+      "selfdestruct"
+    ],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "poison_privileged_slot",
+        "match": {
+          "storage_write": {
+            "semantic_role_any": [
+              "owner",
+              "admin",
+              "role"
+            ],
+            "user_controlled_write_value": true,
+            "caller_reachability": "external_untrusted",
+            "caller_constraint": "missing_or_weak",
+            "write_origin_any": [
+              "calldata",
+              "caller"
+            ],
+            "min_role_confidence": 0.8
+          }
+        },
+        "bind": {
+          "slot": "$slot",
+          "path": "$writer_path"
+        }
+      },
+      {
+        "id": "privileged_use",
+        "match": {
+          "storage_read": {
+            "same_slot_as": "$slot",
+            "used_in": "authorization_guard",
+            "min_role_confidence": 0.8
+          },
+          "authorized_path_effect_any": [
+            "asset_transfer",
+            "mint",
+            "burn",
+            "withdraw",
+            "change_admin",
+            "upgrade_implementation",
+            "delegatecall",
+            "selfdestruct"
+          ]
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "owner_or_admin_guard",
+      "role_admin_guard",
+      "timelock_or_governance_guard",
+      "two_step_acceptance_by_new_admin",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER"
+    ],
+    "downgrade_if_any": [
+      "manual_role_bootstrap",
+      "TWO_STEP_UPGRADE",
+      "GNOSIS_SAFE_PROXY",
+      "COMPOUND_UNITROLLER",
+      "OZ_OWNABLE"
+    ],
+    "inconclusive_if_any": [
+      "partial_role_inference",
+      "DIAMOND_PROXY"
+    ],
+    "manual_review_if_any": [
+      "split_authority_governance",
+      "SLOT0_PROXY"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "bound_sequence",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.9,
+    "min_storage_role_confidence": 0.85,
+    "min_path_reachability_confidence": 0.8,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 15,
+    "max_unresolved_paths": 8,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/access_slot_poisoning",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "unguarded_owner_write_positive",
+      "unguarded_admin_write_positive",
+      "governed_admin_negative",
+      "two_step_accept_negative",
+      "partial_role_inference_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Privileged slot poisoning reaches a sensitive authorized effect",
+    "summary": "Matches user-controlled writes into owner/admin/role state when the same slot later gates a sensitive effect.",
+    "user_summary": "An attacker may be able to change privileged ownership or admin-like state first, then use that poisoned state to pass later authorization checks. If that happens, the contract can start trusting the attacker as an admin or owner.",
+    "technical_summary": "The detector matches an externally reachable, weakly guarded write into owner/admin/role storage and then binds the same slot to a later authorization read that gates a sensitive effect such as transfer, mint, upgrade, delegatecall, or selfdestruct.",
+    "exploit_narrative": "The attacker first calls a path that writes a privileged slot from calldata or caller-controlled input without a strong guard. In a later transaction, the contract reads that same slot in an authorization check and allows a sensitive admin action because the trusted state was already poisoned.",
+    "exploit_preconditions": [
+      "attacker can reach the slot-writing path",
+      "same slot later participates in authorization",
+      "sensitive effect is reachable on the trusted branch"
+    ],
+    "remediation_hints": [
+      "restrict role writes to current trusted authority",
+      "use two-step acceptance for ownership transfer",
+      "place upgrades and treasury actions behind governance or timelock controls"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "attacker can call writer function",
+      "writer function lacks strong caller guard"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call writer function to overwrite owner/admin/role slot with attacker address",
+        "expected_state": "privileged slot contains attacker address"
+      },
+      {
+        "actor": "attacker",
+        "action": "call privileged function that reads same slot as authorization guard",
+        "expected_state": "sensitive effect (upgrade/transfer/admin-change) executed with attacker authority"
+      }
+    ],
+    "success_condition": "attacker reaches sensitive effect by exploiting the poisoned privileged slot",
+    "environment_requirements": [
+      "deployed contract",
+      "attacker account"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 1000000
+    }
+  }
+}

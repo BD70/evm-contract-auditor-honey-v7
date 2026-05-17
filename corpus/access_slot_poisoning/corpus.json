@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "access.public_privileged_slot_poisoning",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "owner_slot_positive",
+      "audit_json": "positive_owner.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "access.public_privileged_slot_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "admin_slot_positive",
+      "audit_json": "positive_admin.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "access.public_privileged_slot_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "governance_negative",
+      "audit_json": "negative_governance.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "access.public_privileged_slot_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "two_step_negative",
+      "audit_json": "negative_two_step.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "access.public_privileged_slot_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "partial_role_inconclusive",
+      "audit_json": "inconclusive_partial_role.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "access.public_privileged_slot_poisoning"
+        ]
+      }
+    }
+  ]
+}

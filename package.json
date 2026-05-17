@@ -1,0 +1,16 @@
+{
+  "name": "evm-contract-auditor-runner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "runner": "bun runner/src/cli.ts",
+    "runner:once": "bun runner/src/cli.ts --once",
+    "test:runner": "bun test runner/test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.13",
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  }
+}

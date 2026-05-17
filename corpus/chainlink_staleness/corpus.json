@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "oracle.chainlink_staleness_unchecked",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "no_staleness_check_positive",
+      "audit_json": "positive_no_staleness_check.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "oracle.chainlink_staleness_unchecked"
+        ]
+      }
+    },
+    {
+      "id": "age_ignored_positive",
+      "audit_json": "positive_age_ignored.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "oracle.chainlink_staleness_unchecked"
+        ]
+      }
+    },
+    {
+      "id": "updatedat_checked_negative",
+      "audit_json": "negative_updatedat_checked.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "oracle.chainlink_staleness_unchecked"
+        ]
+      }
+    },
+    {
+      "id": "aggregator_custom_logic_inconclusive",
+      "audit_json": "inconclusive_custom_aggregator.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "oracle.chainlink_staleness_unchecked"
+        ]
+      }
+    }
+  ]
+}

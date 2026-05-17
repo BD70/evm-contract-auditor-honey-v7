@@ -1,0 +1,174 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "reentrancy.state_after_external_call",
+    "internal_name": "reference_reentrancy_state_after_external_call_v1",
+    "title": "State write (SSTORE) after external call violates checks-effects-interactions pattern",
+    "category": "reentrancy",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.78,
+      "with_witness": 0.94,
+      "inconclusive": 0.35
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "reentrancy_state_corruption",
+    "attack_thesis": "A function makes an external call (CALL/DELEGATECALL) before writing state (SSTORE), allowing the callee to re-enter and observe or manipulate stale state before it is updated.",
+    "protected_asset_or_effect": [
+      "state_integrity",
+      "asset_transfer_authorization"
+    ],
+    "exploit_model": "single_tx_repeatable"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "STATE_WRITE_AFTER_CALL"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation",
+      "delegatecall"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "REENTRANCY_GUARD",
+      "nonReentrant",
+      "mutex_lock",
+      "reentrancy_guard",
+      "OZ_REENTRANCY_GUARD",
+      "PROXY_FORWARDING_PATTERN",
+      "ERC1967_PROXY",
+      "proxy_admin_guard",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "SSTORE_BEFORE_CALL_ONLY",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "proxy_safe_delegatecall"
+    ],
+    "downgrade_if_any": [
+      "msg_sender_guard",
+      "owner_check",
+      "AUTH_GUARDED",
+      "authorization_guard",
+      "tx_origin_whitelist",
+      "STATICCALL_ONLY",
+      "TRANSPARENT_PROXY",
+      "UUPS_PROXY",
+      "BEACON_PROXY",
+      "STRONG_AUTH_GUARD",
+      "UNVERIFIED_STATE_WRITE_AFTER_CALL"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_call_ordering",
+      "UNVERIFIED_STATE_WRITE_AFTER_CALL"
+    ],
+    "manual_review_if_any": [
+      "cross_function_reentrancy_possible"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "action_sequence_analysis",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 30,
+    "max_unresolved_selector_count": 10,
+    "max_unresolved_paths": 5,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/reentrancy_state_after_call",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "write_after_call_positive",
+      "delegatecall_write_positive",
+      "cei_pattern_negative",
+      "reentrancy_guard_negative",
+      "low_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "State write after external call enables reentrancy",
+    "summary": "Matches functions that perform an SSTORE after a CALL or DELEGATECALL without a reentrancy guard, violating the checks-effects-interactions pattern.",
+    "user_summary": "This function writes to contract storage after making an external call. An attacker can exploit this by re-entering the function during the external call, before the state update completes, allowing them to act on stale state and potentially drain funds or corrupt accounting.",
+    "technical_summary": "The detector identifies functions where an SSTORE opcode follows a CALL or DELEGATECALL in the execution path. Without a reentrancy mutex (nonReentrant modifier or equivalent), the callee can re-enter the calling contract and observe pre-update state, enabling classic reentrancy attacks on withdrawal, transfer, or accounting logic.",
+    "exploit_narrative": "The attacker calls a vulnerable function that sends ETH or makes an external call before updating its internal bookkeeping. During the external call, the attacker's fallback function re-enters the vulnerable function. Because the state has not yet been updated, the contract still believes the attacker has their original balance, allowing a repeated withdrawal.",
+    "exploit_preconditions": [
+      "a function performs an external CALL or DELEGATECALL before updating state via SSTORE",
+      "no reentrancy guard (nonReentrant, mutex, or equivalent) protects the function",
+      "the stale state read during re-entry controls a sensitive effect such as asset transfer or balance update"
+    ],
+    "remediation_hints": [
+      "follow the checks-effects-interactions pattern: update state before making external calls",
+      "add a nonReentrant modifier or mutex lock to functions with external calls",
+      "use pull-over-push payment patterns where possible"
+    ],
+    "sarif": {
+      "taxa": [
+        "reentrancy",
+        "state_management"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "SSTORE after external call on same path",
+      "no reentrancy guard"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call victim function; callback re-enters during external call before SSTORE finalizes",
+        "expected_state": "state read during callback reflects pre-call values allowing duplicate execution"
+      }
+    ],
+    "success_condition": "attacker exploits stale state window between external call and SSTORE to execute privileged action twice",
+    "environment_requirements": [
+      "attacker-deployed malicious callback contract"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 1000000
+    }
+  }
+}

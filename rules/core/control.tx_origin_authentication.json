@@ -1,0 +1,155 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "control.tx_origin_authentication",
+    "internal_name": "reference_generic_tx_origin_authentication_v1",
+    "title": "tx.origin used as authentication guard protecting sensitive effects",
+    "category": "access_control",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.78,
+      "with_witness": 0.93,
+      "inconclusive": 0.35
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "tx_origin_authentication_bypass",
+    "attack_thesis": "A function uses tx.origin instead of msg.sender for access control, allowing any intermediary contract called by the legitimate owner to invoke the protected function on the owner's behalf, bypassing the intended authorization.",
+    "protected_asset_or_effect": [
+      "asset_transfer_authorization",
+      "accounting_integrity",
+      "contract_self_preservation"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "TX_ORIGIN_OBSERVED"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "selfdestruct",
+      "delegatecall",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "msg_sender_guard"
+    ],
+    "downgrade_if_any": [
+      "tx_origin_logging_only"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_origin_usage"
+    ],
+    "manual_review_if_any": [
+      "meta_transaction_relay_pattern"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "dataflow_trace"
+    ],
+    "witness_generation": {
+      "native": "tx_origin_flow",
+      "optional_adapters": [
+        "mythril",
+        "halmos"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.5,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 100,
+    "max_unresolved_selector_count": 30,
+    "max_unresolved_paths": 20,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/tx_origin_authentication",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "tx_origin_withdraw_positive",
+      "tx_origin_selfdestruct_positive",
+      "msg_sender_guard_negative",
+      "tx_origin_event_only_negative",
+      "weak_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "tx.origin used for authentication protecting sensitive operations",
+    "summary": "Matches functions that rely on tx.origin for access control while guarding asset transfers, selfdestruct, delegatecall, or accounting mutations.",
+    "user_summary": "This contract uses tx.origin to check who is allowed to perform a sensitive operation. An attacker can trick the legitimate owner into calling a malicious contract, which then calls back into the vulnerable function. Because tx.origin still points to the owner, the check passes and the attacker gains unauthorized access.",
+    "technical_summary": "The detector identifies functions where the TX_ORIGIN_OBSERVED behavior tag is present and a sensitive reachable effect (asset_transfer, selfdestruct, delegatecall, or accounting_mutation) exists on the same path. The finding is suppressed when a msg.sender guard is also detected, indicating tx.origin is used only for supplementary purposes such as logging.",
+    "exploit_narrative": "An attacker deploys a contract with a fallback or a benign-looking function that internally calls the victim contract's protected function. The attacker social-engineers the legitimate owner into interacting with the malicious contract. When the owner sends a transaction to the attacker's contract, it relays the call to the victim. Since tx.origin equals the owner's EOA, the authorization check passes, and the attacker can drain funds, destroy the contract, or mutate accounting state.",
+    "exploit_preconditions": [
+      "a function uses tx.origin as the sole authorization mechanism",
+      "the protected path includes a sensitive effect such as asset transfer or selfdestruct",
+      "no additional msg.sender check restricts the caller",
+      "the attacker can induce the legitimate owner to call a malicious intermediary contract"
+    ],
+    "remediation_hints": [
+      "replace tx.origin checks with msg.sender for access control",
+      "if tx.origin is needed for meta-transaction support, combine it with a msg.sender check or a trusted forwarder pattern",
+      "use OpenZeppelin's Ownable or AccessControl for robust authorization"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "authentication"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "target function uses tx.origin for auth",
+      "attacker can trick an authorized EOA into calling a malicious contract"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "deploy malicious contract and trick authorized EOA into calling it",
+        "expected_state": "malicious contract forwards call to victim; tx.origin is the authorized EOA"
+      }
+    ],
+    "success_condition": "attacker bypasses tx.origin guard and reaches privileged function through the authorized EOA",
+    "environment_requirements": [
+      "attacker-deployed malicious contract",
+      "social engineering of authorized EOA"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

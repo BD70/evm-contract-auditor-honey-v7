@@ -1,0 +1,179 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "auth.signature_replay_missing_nonce",
+    "internal_name": "reference_auth_signature_replay_missing_nonce_v1",
+    "title": "ecrecover used on state-changing path without nonce increment to prevent signature replay",
+    "category": "authentication",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.74,
+      "with_witness": 0.9,
+      "inconclusive": 0.36
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "signature_replay",
+    "attack_thesis": "A function verifies a signature via ecrecover (precompile address 0x1) on a state-changing path but does not increment a nonce associated with the recovered signer. The same signature can be replayed indefinitely to repeat the authorized action.",
+    "protected_asset_or_effect": [
+      "signature_authorization",
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [
+      "ECRECOVER_CALL"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation",
+      "mint",
+      "change_admin"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "ecrecover_without_nonce_increment",
+        "match": {
+          "call": {
+            "target": "0x0000000000000000000000000000000000000001",
+            "missing_nonce_sstore": true
+          },
+          "reachable_effect_any": [
+            "asset_transfer",
+            "accounting_mutation",
+            "mint"
+          ]
+        },
+        "bind": {
+          "path": "$sig_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "nonce_increment_guard",
+      "OZ_NONCES",
+      "eip712_nonce_guard",
+      "used_signature_bitmap_guard"
+    ],
+    "downgrade_if_any": [
+      "partial_nonce_check",
+      "timestamp_deadline_guard"
+    ],
+    "inconclusive_if_any": [
+      "unresolved_signer_nonce_path",
+      "cross_function_nonce_management"
+    ],
+    "manual_review_if_any": [
+      "custom_replay_protection"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "ecrecover_nonce_dataflow_trace",
+      "optional_adapters": [
+        "mythril"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.65,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 40,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/signature_replay_nonce",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "ecrecover_no_nonce_positive",
+      "ecrecover_with_nonce_sstore_negative",
+      "cross_chain_sig_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Signature replay attack: ecrecover without nonce protection on state-changing path",
+    "summary": "Matches functions that call ecrecover (precompile 0x1) on a path with state-changing effects but do not increment a per-signer nonce in storage.",
+    "user_summary": "This function verifies a cryptographic signature but does not track used signatures with a nonce. An attacker who captures a valid signature can replay it repeatedly to repeat the authorized action \u2014 withdrawing funds, minting tokens, or executing privileged operations \u2014 as many times as they like.",
+    "technical_summary": "The detector identifies functions where ecrecover (CALL to precompile 0x1) appears on a state-changing path (asset_transfer, mint, accounting_mutation) without a corresponding SLOAD-increment-SSTORE pattern for a nonce slot associated with the recovered address. This allows indefinite replay of any valid signature.",
+    "exploit_narrative": "A user signs a meta-transaction or off-chain authorization. The attacker intercepts the signature and replays the same transaction repeatedly. Each replay executes the authorized action again \u2014 draining funds, minting extra tokens, or applying double credits \u2014 until the attacker is satisfied.",
+    "exploit_preconditions": [
+      "contract validates a signature via ecrecover",
+      "no nonce, deadline, or used-signature tracking prevents replay",
+      "signed action has material economic effect"
+    ],
+    "remediation_hints": [
+      "add a per-address nonce mapping (nonces[signer]++) and include the nonce in the signed message",
+      "use OZ Nonces (EIP-4337 compatible) or equivalent well-audited nonce management",
+      "include a deadline in the signed message and reject expired signatures",
+      "adopt EIP-712 typed signing with a domain separator to bind signatures to the specific contract and chain"
+    ],
+    "sarif": {
+      "taxa": [
+        "authentication",
+        "signature_security"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "valid signature captured (e.g., from mempool or off-chain API)",
+      "contract does not track used signatures"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call function with replayed signature (same r, s, v, message hash as original)",
+        "expected_state": "signature validates successfully; authorized effect executed again"
+      },
+      {
+        "actor": "attacker",
+        "action": "repeat call with same signature until objective achieved",
+        "expected_state": "repeated execution extracts value proportional to signature reuse count"
+      }
+    ],
+    "success_condition": "same signature executes authorized action N>1 times without the signer's consent",
+    "environment_requirements": [
+      "previously broadcast valid signature",
+      "deployed victim contract"
+    ],
+    "budget_hint": {
+      "max_tx": 5,
+      "max_gas": 2000000
+    }
+  }
+}

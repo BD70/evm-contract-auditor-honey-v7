@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "chains": [
+    {
+      "slug": "eth-mainnet",
+      "name": "Ethereum Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://eth.example-rpc.invalid",
+      "rpcWsUrl": "wss://eth.example-rpc.invalid",
+      "startBlock": 0,
+      "confirmations": 2
+    },
+    {
+      "slug": "base",
+      "name": "Base",
+      "enabled": false,
+      "rpcHttpUrl": "https://base.example-rpc.invalid",
+      "confirmations": 3,
+      "rulesPath": "rules/core"
+    }
+  ]
+}

@@ -1,0 +1,184 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "access.hardcoded_admin_address",
+    "internal_name": "reference_generic_hardcoded_admin_address_v1",
+    "title": "Hardcoded immutable address is the sole authorization guard for privileged operations",
+    "category": "centralization_risk",
+    "severity": "medium",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "suspicious_behavior",
+    "confidence_policy": {
+      "base": 0.68,
+      "with_witness": 0.84,
+      "inconclusive": 0.32
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "centralization_risk",
+    "attack_thesis": "A privileged function is guarded solely by a comparison of msg.sender to a hardcoded PUSH20 address. If that private key is compromised, the attacker has unconditional permanent control with no revocation mechanism.",
+    "protected_asset_or_effect": [
+      "admin_rights",
+      "upgrade_control",
+      "asset_transfer"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "change_admin",
+      "upgrade_implementation",
+      "mint",
+      "burn",
+      "selfdestruct"
+    ],
+    "authorized_path_effect_any": [
+      "asset_transfer",
+      "change_admin",
+      "upgrade_implementation",
+      "mint",
+      "burn",
+      "selfdestruct"
+    ],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "immutable_caller_guard",
+        "match": {
+          "guard": {
+            "type": "eq_caller_immutable",
+            "caller_reachability": "external_untrusted"
+          },
+          "authorized_path_effect_any": [
+            "asset_transfer",
+            "change_admin",
+            "upgrade_implementation",
+            "mint",
+            "burn",
+            "selfdestruct"
+          ]
+        },
+        "bind": {
+          "path": "$guarded_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER",
+      "timelock_or_governance_guard",
+      "two_step_acceptance_by_new_admin",
+      "governance_guard",
+      "GNOSIS_SAFE_PROXY",
+      "COMPOUND_UNITROLLER"
+    ],
+    "downgrade_if_any": [
+      "OZ_OWNABLE",
+      "manual_admin_review",
+      "KNOWN_SAFE_PROXY_PATTERN"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_guard_resolution"
+    ],
+    "manual_review_if_any": [
+      "multisig_known_address"
+    ]
+  },
+  "proof": {
+    "min_level": "P2",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "immutable_guard_trace",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.6,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 25,
+    "max_unresolved_paths": 15,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/hardcoded_admin_address",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "hardcoded_eoa_admin_positive",
+      "timelock_multisig_negative",
+      "partial_role_evidence_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Hardcoded EOA address is the sole guard for privileged functions",
+    "summary": "Matches privileged functions guarded solely by comparison to a PUSH20 immutable address with no multisig, timelock, or role system.",
+    "user_summary": "The contract uses a single hardcoded address as the only safeguard for privileged operations. If that private key is compromised or lost, the attacker gains permanent unconditional administrative control with no revocation mechanism.",
+    "technical_summary": "The detector identifies guard catalog entries of type eq_caller_immutable where a PUSH20 literal is compared to msg.sender as the sole gate for functions with sensitive effects. No OZ Ownable2Step, AccessControl, Timelock, or multisig pattern is present as a suppressor.",
+    "exploit_narrative": "The hardcoded admin private key is leaked or phished. The attacker uses the key to call any privileged function \u2014 upgrade implementation, withdraw treasury, change admin \u2014 without any additional authorization required.",
+    "exploit_preconditions": [
+      "single EOA private key controls all privileged operations",
+      "no timelock, multisig, or governance delays the effect"
+    ],
+    "remediation_hints": [
+      "migrate admin control to a Gnosis Safe multisig or equivalent",
+      "add a timelock (OZ TimelockController) for all privileged operations",
+      "use OZ Ownable2Step to require active acceptance of admin role transfers",
+      "consider OZ AccessControl for role-based privilege separation"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "centralization"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "hardcoded admin private key is known to attacker",
+      "function has no additional authorization"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "sign transaction from compromised hardcoded admin address and call privileged function",
+        "expected_state": "privileged effect (upgrade/withdraw/admin-change) executed with no other safeguard"
+      }
+    ],
+    "success_condition": "attacker gains full admin control after single key compromise",
+    "environment_requirements": [
+      "compromised EOA private key"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

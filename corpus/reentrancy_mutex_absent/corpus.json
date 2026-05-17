@@ -1,0 +1,49 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "reentrancy.classic_mutex_absent",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "no_mutex_positive",
+      "audit_json": "positive_no_mutex.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "reentrancy.classic_mutex_absent"
+        ]
+      }
+    },
+    {
+      "id": "has_mutex_negative",
+      "audit_json": "negative_has_mutex.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "reentrancy.classic_mutex_absent"
+        ]
+      }
+    },
+    {
+      "id": "no_external_calls_inconclusive",
+      "audit_json": "inconclusive_no_calls.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "reentrancy.classic_mutex_absent"
+        ]
+      }
+    }
+  ]
+}

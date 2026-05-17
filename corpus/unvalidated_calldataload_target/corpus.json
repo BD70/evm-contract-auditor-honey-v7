@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "call.unvalidated_calldataload_target_injection",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "fake_reserve_injection_positive",
+      "audit_json": "positive_fake_reserve.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.unvalidated_calldataload_target_injection"
+        ]
+      }
+    },
+    {
+      "id": "fake_oracle_injection_positive",
+      "audit_json": "positive_fake_oracle.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.unvalidated_calldataload_target_injection"
+        ]
+      }
+    },
+    {
+      "id": "registry_validated_negative",
+      "audit_json": "negative_registry_validated.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "call.unvalidated_calldataload_target_injection"
+        ]
+      }
+    },
+    {
+      "id": "allowlist_guarded_negative",
+      "audit_json": "negative_allowlist_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "call.unvalidated_calldataload_target_injection"
+        ]
+      }
+    },
+    {
+      "id": "weak_call_resolution_inconclusive",
+      "audit_json": "inconclusive_weak_resolution.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "call.unvalidated_calldataload_target_injection"
+        ]
+      }
+    }
+  ]
+}

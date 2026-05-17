@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "auth.signature_replay_missing_nonce",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "no_nonce_positive",
+      "audit_json": "positive_no_nonce.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "auth.signature_replay_missing_nonce"
+        ]
+      }
+    },
+    {
+      "id": "view_only_ecrecover_positive",
+      "audit_json": "positive_view_only_ecrecover.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "auth.signature_replay_missing_nonce"
+        ]
+      }
+    },
+    {
+      "id": "nonce_incremented_negative",
+      "audit_json": "negative_nonce_incremented.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "auth.signature_replay_missing_nonce"
+        ]
+      }
+    },
+    {
+      "id": "external_nonce_inconclusive",
+      "audit_json": "inconclusive_external_nonce.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "auth.signature_replay_missing_nonce"
+        ]
+      }
+    }
+  ]
+}

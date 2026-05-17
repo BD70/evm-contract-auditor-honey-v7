@@ -1,0 +1,1 @@
+python3 -m evm_decon --file ./test/pancake_contract/compiled_code.txt --format semantic --no-resolve --output ./test/pancake_contract/output_semantic.txt 

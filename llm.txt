@@ -1,0 +1,1273 @@
+EVM CONTRACT AUDITOR - LLM HANDOFF
+==================================
+
+Purpose
+-------
+This file is a complete AI-oriented description of the project. It exists so another LLM can be given one file and still understand:
+
+1. what the project is,
+2. what the main runtime pipeline is,
+3. what each artifact type means,
+4. how to create a new detector ("rule"),
+5. how to create the matching corpus,
+6. how to create or use profiles,
+7. what to avoid,
+8. how detections actually happen,
+9. how to keep detectors robust instead of shallow.
+
+This project is a bytecode-first smart-contract audit engine.
+
+Strict product contract
+-----------------------
+The intended product contract is:
+
+    bytecode -> behavior facts -> state model -> deterministic detector spec -> optional witness backends -> findings
+
+This means:
+
+- production analysis starts from compiled EVM bytecode, not Solidity source;
+- names and selectors may help labeling, but they are not primary evidence;
+- the deconstructor emits machine-readable behavior facts;
+- the checker matches deterministic detectors against those facts;
+- optional external backends may strengthen or downgrade confidence, but they do not replace the native detector logic.
+
+
+HIGH-LEVEL REPO STRUCTURE
+=========================
+
+Main runtime components
+-----------------------
+1. evm_decon
+   - deconstructs runtime bytecode
+   - emits behavior JSON: evm-audit.behavior
+
+2. evm_check
+   - loads detectors
+   - validates detectors
+   - matches detectors against behavior JSON
+   - emits findings JSON and SARIF
+
+2b. evm_audit
+   - runs evm_decon and evm_check together
+   - accepts either a hex file or raw hex string
+   - emits merged audit JSON, api-json, or SARIF
+
+3. evm_rule
+   - detector authoring workbench
+   - scaffolds detector templates
+   - validates detector quality
+   - tests detectors against corpora
+   - explains why a detector matched or did not match
+   - "doctor" command catches shallow anti-patterns
+
+4. evm_diff
+   - compares source-derived truth to bytecode-derived behavior
+   - regression support only
+   - not production evidence
+
+
+CORE CONCEPTS
+=============
+
+There are 5 distinct artifact classes in this repo:
+
+1. behavior JSON
+2. state model
+3. detector
+4. profile
+5. corpus
+
+These must remain separate.
+
+
+1. Behavior JSON
+----------------
+Behavior JSON is emitted from the bytecode deconstructor.
+
+It is the machine contract that downstream analysis consumes.
+
+Current schema identity:
+
+    schema: evm-audit.behavior
+    schema_version: 1.0.0
+
+Behavior JSON is NOT:
+- a hand-authored input,
+- a detector,
+- a corpus fixture policy,
+- a profile.
+
+Behavior JSON IS:
+- the deconstructor's representation of what the contract appears to do.
+
+Important top-level fields:
+- bytecode_identity
+- bytecode
+- contract
+- functions
+- storage
+- memory
+- arithmetic
+- calls
+- events
+- flows
+- invariants
+- assumptions
+- analysis_warnings
+- coverage
+- state_model
+- checker_findings
+
+Important:
+- checker_findings is empty in plain evm_decon output
+- vulnerability decisions appear only after evm_check or evm_audit runs detectors
+
+
+2. State Model
+--------------
+The state model is derived from behavior JSON.
+
+It is not authored by users directly in normal use.
+
+Purpose:
+- normalize storage slots,
+- normalize reader/writer relationships,
+- normalize guards,
+- normalize path/effect relationships,
+- normalize call/delegatecall targets,
+- make multi-step and cross-function detectors precise.
+
+Current schema identity inside behavior JSON:
+
+    schema: evm-audit.state_model.v1
+    schema_version: 1.0.0
+
+Important sections:
+- storage_entities
+- slot_index
+- path_index
+- guard_catalog
+- call_index
+- economic_index
+- proxy_index
+- initializer_index
+- evidence_index
+
+The state model is what lets the checker answer questions like:
+- which exact slot was written?
+- who wrote it?
+- was that write attacker-controlled?
+- which later function reads the same slot?
+- was the read used in an authorization guard?
+- what sensitive effect is reachable after that?
+- is a delegatecall target fixed, storage-backed, or publicly mutable?
+
+
+3. Detector
+-----------
+"Rule" in older wording means "detector".
+
+The repo now uses a strict detector spec:
+
+    schema: evm-audit.detector.v1
+    schema_version: 1.0.0
+
+A detector is vulnerability logic only.
+
+A detector must not contain:
+- benchmark-only hardcoded constants unless the bug class truly requires them generically,
+- contract-family allowlists,
+- fixture-specific assumptions,
+- source-code-only reasoning,
+- a dependence on selector names or function names as primary evidence.
+
+The detector says:
+"When these bytecode-observable facts are true, and these counter-evidence conditions are absent, emit this finding."
+
+
+4. Profile
+----------
+A profile is optional metadata for known contract families or deployments.
+
+A profile may add:
+- selector labels,
+- protocol role names,
+- storage anchors,
+- semantic hints,
+- known layout expectations,
+- function semantic overrides.
+
+A profile may NOT add:
+- vulnerability conclusions,
+- detector severities,
+- detector suppressions,
+- exploit claims,
+- corpus outcomes.
+
+Profiles help interpret contracts.
+Detectors decide whether behavior is suspicious or vulnerable.
+
+
+5. Corpus
+---------
+A corpus is regression data only.
+
+It is test data for detectors.
+
+Schema identity:
+
+    schema: evm-audit.corpus.v1
+    schema_version: 1.0.0
+
+The corpus validates that a detector:
+- fires when it should,
+- does not fire when it should not,
+- degrades to inconclusive when evidence quality is weak or ambiguous.
+
+A corpus never participates in production detection.
+
+
+WHY THESE THINGS ARE SEPARATE
+=============================
+
+If you mix these artifact types together, the system becomes dishonest.
+
+Examples of bad mixing:
+- profile says a contract is vulnerable -> wrong; profile is metadata, not audit logic.
+- detector assumes a specific fixture's constants -> wrong; that belongs in corpus or generic arithmetic logic.
+- corpus data influences production matching -> wrong; corpus is test-only.
+- detector depends on function names like "setOwner" -> weak and unreliable.
+
+Correct separation:
+- behavior JSON = what bytecode analysis recovered
+- state model = normalized cross-function facts
+- detector = vulnerability logic
+- profile = interpretation hints
+- corpus = tests
+
+
+PROJECT MENTAL MODEL
+====================
+
+To understand the repo, use this mental model:
+
+- evm_decon answers: "what does the bytecode appear to do?"
+- state_model answers: "how can we reason about state, paths, guards, and effects precisely?"
+- detector answers: "what vulnerability shape should be matched?"
+- corpus answers: "how do we know the detector is correct?"
+- profile answers: "what extra semantic hints can improve deconstruction?"
+
+
+HOW DETECTION ACTUALLY WORKS
+============================
+
+Production flow
+---------------
+1. User gives runtime bytecode.
+2. evm_decon emits behavior JSON.
+3. behavior JSON includes state_model.
+4. evm_check loads detectors from rules/core or another rule directory.
+5. Each detector is validated first.
+6. The detector matcher checks function-level or stateful/multi-step predicates.
+7. If matched, it emits a finding with evidence, proof data, confidence, and status.
+
+The system is not supposed to work like:
+- grep for "owner"
+- grep for "delegatecall"
+- grep for "upgrade"
+
+The system is supposed to work like:
+- bind an exact storage slot,
+- prove that attacker-controlled data reaches that slot,
+- prove the same slot is later trusted,
+- prove that the trusted branch reaches a sensitive effect,
+- prove that known safe counter-evidence is absent,
+- only then emit a finding.
+
+
+CURRENT DETECTOR FAMILIES
+=========================
+
+Current built-in example detectors:
+- init.public_initializer_takeover
+- access.public_privileged_slot_poisoning
+- auth.authorization_predicate_poisoning
+- proxy.unprotected_implementation_upgrade
+- delegatecall.storage_controlled_target
+- defi.rounding.assumed_actual_balance_mismatch
+- token.transfer.sender_debit_credit_mismatch
+
+These are example detector classes, not first-party hardcoded contract knowledge.
+
+
+DETECTOR SPEC (VERY IMPORTANT)
+==============================
+
+Every detector file must contain these sections:
+
+1. schema
+2. schema_version
+3. rule
+4. intent
+5. requires
+6. counter_evidence
+7. proof
+8. analysis_requirements
+9. fixture_requirements
+10. reporting
+
+
+Detector section details
+------------------------
+
+rule
+----
+Contains detector metadata.
+
+Required fields:
+- id
+- internal_name
+- title
+- category
+- severity
+- scope
+- lifecycle_status
+- default_status
+- confidence_policy
+- disallow_primary_evidence
+
+Important:
+- function_name and selector must always be disallowed as primary evidence.
+- internal_name must use reference_<family>_<vuln>_v1
+
+
+intent
+------
+This explains what the vulnerability means semantically.
+
+Required fields:
+- vulnerability_class
+- attack_thesis
+- protected_asset_or_effect
+- exploit_model
+
+Good intent example:
+- vulnerability_class: privileged_slot_poisoning
+- attack_thesis: attacker can write a privileged slot and later the same slot is used in authorization for a sensitive effect
+- protected_asset_or_effect: ownership, upgrade control, fund movement
+- exploit_model: multi_tx
+
+
+requires
+--------
+This is the core matching logic.
+
+Supported top-level patterns include:
+- stateful
+- facts_all
+- flows_all
+- reachable_effect_any
+- authorized_path_effect_any
+- economic_effect_any
+- sequence
+- storage_write (for contract-scope direct predicates)
+
+The sequence section is critical for cross-function and multi-transaction bugs.
+
+
+counter_evidence
+----------------
+This controls when the detector should suppress, downgrade, or go inconclusive.
+
+Required fields:
+- suppress_if_any
+- downgrade_if_any
+- inconclusive_if_any
+- manual_review_if_any
+
+Examples:
+- initializer_guard
+- role_admin_guard
+- timelock_or_governance_guard
+- two_step_acceptance_by_new_admin
+- signature_authorization_guard
+- erc1167_fixed_clone_target
+
+
+proof
+-----
+Required fields:
+- min_level
+- preferred_witness
+- acceptable_witnesses
+- witness_generation
+
+Proof levels:
+- P0
+- P1
+- P2
+- P3
+- P4
+
+Witness kinds:
+- none
+- dataflow_trace
+- reachable_path
+- invariant_argument
+- symbolic_counterexample
+- fuzz_counterexample
+- transaction_sequence
+- deterministic_arithmetic_witness
+
+Severity minimums enforced by validation:
+- critical -> at least P4
+- high -> at least P3
+- medium -> at least P2
+- low -> at least P1
+- info -> at least P0
+
+
+analysis_requirements
+---------------------
+These gates stop the engine from acting overconfident when the recovered behavior is weak.
+
+Required fields:
+- min_function_coverage
+- min_storage_role_confidence
+- min_path_reachability_confidence
+- max_unknown_action_expression_count
+- max_unresolved_selector_count
+- max_unresolved_paths
+- require_no_unmodeled_terminators
+
+Meaning:
+- if coverage is too weak, the detector should not pretend certainty;
+- a matched detector can become analysis_inconclusive instead of strong severity.
+
+
+fixture_requirements
+--------------------
+Required fields:
+- corpus
+- positive_fixtures_min
+- negative_fixtures_min
+- inconclusive_fixtures_min
+- required_scenarios
+
+This makes detector testing a first-class requirement.
+
+
+reporting
+---------
+Required fields:
+- title_template
+- summary
+- user_summary
+- technical_summary
+- exploit_narrative
+- exploit_preconditions
+- remediation_hints
+- sarif
+
+This controls how the finding is described once matched.
+
+The reporting fields are important for API output and UI rendering:
+- summary = concise detector description
+- user_summary = short non-specialist explanation
+- technical_summary = precise technical explanation
+- exploit_narrative = short exploit sequence
+
+
+SEQUENCE MATCHING AND BINDING
+=============================
+
+This is one of the most important ideas in the system.
+
+For serious stateful vulnerabilities, a detector should not just say:
+
+    "an owner/admin slot was written and later a role/admin slot was read"
+
+That is too broad and causes false positives.
+
+Instead, the detector should:
+1. bind the exact slot from the write step,
+2. reuse that same bound slot in the later read step.
+
+Example pattern:
+
+step 1:
+- match a storage_write
+- semantic_role_any: owner/admin/role
+- user_controlled_write_value: true
+- caller_constraint: missing_or_weak
+- bind.slot = $slot
+
+step 2:
+- match a storage_read
+- same_slot_as = $slot
+- used_in = authorization_guard
+- authorized_path_effect_any includes withdraw or upgrade_implementation
+
+This is how the engine avoids shallow role-name matching.
+
+
+WHAT MAKES A GOOD DETECTOR
+==========================
+
+A good detector:
+- uses bytecode-observable behavior,
+- uses state joins,
+- requires a sensitive effect,
+- models counter-evidence explicitly,
+- has real analysis quality gates,
+- has a real proof strategy,
+- has real positive/negative/inconclusive fixtures.
+
+A bad detector:
+- depends on names/selectors,
+- uses only one behavior tag,
+- has no variable binding,
+- has no same-slot join,
+- has no effect constraint,
+- has no counter-evidence,
+- has permissive analysis thresholds like 1000000 unknowns,
+- has no corpus.
+
+
+HOW TO CREATE A NEW VULNERABILITY DETECTOR
+==========================================
+
+When a human or another AI wants to add a new vulnerability detector, do NOT start by writing JSON immediately.
+
+Start by answering these questions:
+
+1. What is the vulnerability thesis?
+   Example: "attacker can publicly poison guardian state and later bypass emergency pause authority"
+
+2. What exact state or effect matters?
+   Example: guardian slot, validator mapping, implementation slot, reserve accounting state
+
+3. Is this a single-function bug or a multi-step bug?
+   - single-function examples: arithmetic mismatch, immediate unsafe external call
+   - multi-step examples: role poisoning, proxy upgrade poisoning, delayed delegatecall target control
+
+4. What sensitive effect makes the bug dangerous?
+   Examples:
+   - asset_transfer
+   - withdraw
+   - mint
+   - burn
+   - change_admin
+   - upgrade_implementation
+   - delegatecall
+   - selfdestruct
+   - authorize_external_call
+   - authorize_message
+
+5. What legitimate counter-evidence should suppress it?
+   Examples:
+   - governance guard
+   - timelock
+   - role admin
+   - initializer single-use protection
+   - signature protection with nonce/replay safety
+   - fixed ERC-1167 clone target
+
+6. What proof level is justified?
+   - observation only?
+   - reachable path?
+   - invariant argument?
+   - deterministic arithmetic witness?
+   - transaction sequence witness?
+
+
+DETECTOR AUTHORING PROCEDURE
+============================
+
+Step 1: classify the vulnerability
+----------------------------------
+Decide:
+- category
+- severity
+- scope
+- exploit model
+
+Typical scopes:
+- function
+- contract
+- cross_function
+- multi_tx
+- protocol
+
+
+Step 2: write the intent
+------------------------
+Describe the bug in English, but in a way that can map to facts.
+
+Bad:
+- "owner bug"
+
+Good:
+- "an externally reachable function can write a privileged slot from attacker-controlled input, and a later privileged path trusts the same slot to reach upgrade_implementation"
+
+
+Step 3: define the required evidence
+------------------------------------
+Decide what must be observed.
+
+Examples:
+- storage_write to privileged slot
+- same slot later read
+- read used in authorization_guard
+- later effect is withdraw or delegatecall
+- caller_reachability external_untrusted
+- write_origin calldata or caller
+
+
+Step 4: define bindings and joins
+---------------------------------
+If the bug is stateful, bind entities.
+
+Examples:
+- bind.slot = $slot
+- bind.path = $writer_path
+- later require same_slot_as = $slot
+
+
+Step 5: define effect constraints
+---------------------------------
+This is required for serious detectors.
+
+Reading a privileged slot is not enough.
+
+The detector should say what dangerous action is unlocked.
+
+
+Step 6: define counter-evidence
+-------------------------------
+Ask:
+- when should this definitely not fire?
+- when should it still fire but with lower severity?
+- when should it become inconclusive?
+- when should a human review still be requested?
+
+
+Step 7: define proof strategy
+-----------------------------
+Examples:
+- transaction_sequence for multi-step exploitation
+- deterministic_arithmetic_witness for arithmetic mismatch
+- reachable_path for immediate code-execution hazards
+
+
+Step 8: define analysis gates
+-----------------------------
+Do not allow nearly disabled thresholds.
+
+Use real numbers.
+
+Examples of meaningful thresholds:
+- min_function_coverage around 0.85 to 0.95
+- min_storage_role_confidence around 0.75 to 0.9
+- low max_unknown_action_expression_count
+- low max_unresolved_paths
+
+
+Step 9: create corpus requirements
+----------------------------------
+Every detector needs:
+- at least 2 positive fixtures
+- at least 2 negative fixtures
+- at least 1 inconclusive fixture
+
+
+HOW TO THINK ABOUT COMMON VULNERABILITY CLASSES
+===============================================
+
+Privileged slot poisoning
+-------------------------
+General idea:
+- attacker controls a write into owner/admin/role-like state
+- same slot later participates in authorization
+- sensitive effect is reachable
+
+Needed evidence:
+- storage_write
+- caller_reachability external_untrusted
+- user_controlled_write_value true
+- same_slot_as join
+- used_in authorization_guard
+- authorized_path_effect_any contains real danger
+
+
+Authorization predicate poisoning
+---------------------------------
+General idea:
+- attacker controls state like whitelist/signer/operator/validator/reporter/member
+- same state later authorizes a sensitive operation
+
+This is different from plain owner/admin poisoning.
+
+Relevant roles may include:
+- whitelist
+- signer
+- operator
+- validator
+- reporter
+- approved_spender
+- guardian
+- role_member
+- approval bitmap
+
+
+Unprotected proxy upgrade
+-------------------------
+General idea:
+- implementation slot is externally writable without strong upgrade controls
+
+The detector should recognize:
+- ERC-1967 implementation/admin/beacon concepts
+
+It should not flag:
+- well-guarded upgrade flows
+- governance/timelock-protected paths
+
+
+Storage-controlled delegatecall target
+--------------------------------------
+General idea:
+- attacker controls storage
+- later delegatecall target comes from that storage
+
+Important distinction:
+- fixed clone target -> expected for ERC-1167
+- storage-backed mutable target -> suspicious
+- publicly mutable storage target -> more severe
+
+
+Arithmetic/accounting mismatch
+------------------------------
+General idea:
+- arithmetic rounds or scales a quantity
+- pricing/invariant path assumes one value
+- settlement/accounting path uses another
+- repeatability or low liquidity turns mismatch into real leakage
+
+This class usually needs:
+- arithmetic facts
+- flow evidence
+- deterministic witness or symbolic evidence
+
+
+HOW TO CREATE A CORPUS
+======================
+
+A detector without a corpus is not production-ready.
+
+Corpus purpose
+--------------
+The corpus proves:
+- the detector fires when it should,
+- the detector stays quiet when it should,
+- the detector becomes inconclusive when evidence quality is weak.
+
+Corpus file responsibilities
+----------------------------
+The corpus manifest says:
+- which detector is being validated,
+- which audit JSON files belong to that validation set,
+- which cases are positive/negative/inconclusive.
+
+The audit JSON fixture files are machine examples, not live production contracts.
+
+
+Corpus design rules
+-------------------
+Every detector corpus should contain:
+- positive case 1
+- positive case 2
+- negative case 1
+- negative case 2
+- inconclusive case 1
+
+Positive fixtures:
+- should satisfy the exact detector logic
+- should satisfy same-slot joins if the detector is stateful
+- should expose the sensitive effect
+
+Negative fixtures:
+- should resemble the bug enough to be realistic
+- but should include legitimate suppressing counter-evidence
+
+Inconclusive fixtures:
+- should look like a partial match
+- but have low coverage, low role confidence, unresolved paths, or other quality issues
+
+
+Examples of what to test in corpus
+----------------------------------
+For a privileged slot poisoning detector:
+- positive: public owner write then privileged withdraw
+- positive: public admin write then upgrade
+- negative: role write protected by governance
+- negative: two-step ownership acceptance
+- inconclusive: same shape but weak role inference / low path certainty
+
+For an auth predicate detector:
+- positive: whitelist poisoning then withdrawal auth
+- positive: validator poisoning then bridge message auth
+- negative: signature guard
+- negative: role admin protected update
+- inconclusive: state likely auth-related but confidence weak
+
+
+WHAT A PROFILE IS FOR
+=====================
+
+Profiles are helpful when raw bytecode alone leaves some interpretation uncertain.
+
+Good profile uses:
+- recognize a proxy family
+- label selector candidates
+- label storage anchors
+- identify protocol-specific slots
+
+Bad profile uses:
+- "this contract is safe"
+- "this contract is vulnerable"
+- "suppress detector X"
+
+Profiles should improve deconstruction, not short-circuit auditing.
+
+
+WHEN TO CREATE OR USE A PROFILE
+===============================
+
+Create a profile when:
+- a known contract family repeatedly appears,
+- storage layout anchors are known,
+- selector labels help interpretation,
+- there is legitimate deploy-family metadata.
+
+Do NOT create a profile when:
+- you just want to make a detector pass,
+- you want to suppress a finding,
+- you want to hardcode a benchmark expectation.
+
+
+HOW AN AI SHOULD BE PROMPTED TO ADD A NEW DETECTOR
+==================================================
+
+If another AI is asked to add a new vulnerability class, it should be given:
+
+1. vulnerability thesis
+2. protected asset/effect
+3. attack sequence
+4. exact sensitive effect
+5. counter-evidence expectations
+6. proof strategy expectations
+7. whether proxy/init/accounting semantics matter
+
+The AI should return:
+- detector JSON
+- corpus manifest
+- fixture plan or fixture files
+- reasoning for proof level
+- reasoning for counter-evidence
+
+
+GOOD PROMPT TEMPLATE FOR AN AI
+==============================
+
+Use something like this:
+
+    Create a new evm-audit.detector.v1 detector.
+    Vulnerability thesis: [describe the bug behaviorally].
+    Protected asset/effect: [what is at risk].
+    Attack sequence: [write step, later trust step, sensitive effect].
+    Scope: [function/contract/multi_tx/protocol].
+    Required state/effect joins: [same slot, same delegate target, same guard, etc].
+    Counter-evidence: [what should suppress, downgrade, or become inconclusive].
+    Proof strategy: [reachable_path / transaction_sequence / deterministic_arithmetic_witness / etc].
+    Also create the matching evm-audit.corpus.v1 manifest and at least
+    2 positive, 2 negative, and 1 inconclusive fixture plans.
+    Do not depend on function names or selectors as primary evidence.
+
+
+WHAT AN AI MUST NEVER DO
+========================
+
+Reject or correct AI output if it:
+- relies on function name contains X,
+- relies on selector == Y as primary evidence,
+- has a multi-step sequence with no bind,
+- binds variables but never rejoins them,
+- has no sensitive effect requirement,
+- has no counter-evidence,
+- has effectively disabled analysis thresholds,
+- puts benchmark constants into a generic detector,
+- uses profile metadata as exploit proof,
+- uses corpus fixtures as production assumptions.
+
+
+EXAMPLE MENTAL MODEL FOR "WRITING A VULNERABILITY"
+==================================================
+
+The user may say:
+
+    "I want to detect contracts where a public function can set an admin-like slot and later that admin can upgrade the implementation."
+
+Translate that into detector logic:
+
+1. stateful = true
+2. scope = multi_tx
+3. step 1:
+   - match storage_write
+   - semantic_role_any: admin/owner/role
+   - user_controlled_write_value true
+   - caller_reachability external_untrusted
+   - caller_constraint missing_or_weak
+   - bind slot as $slot
+
+4. step 2:
+   - match storage_read
+   - same_slot_as $slot
+   - used_in authorization_guard
+   - authorized_path_effect_any includes upgrade_implementation
+
+5. suppressions:
+   - admin_guard
+   - governance/timelock guard
+   - two-step acceptance if applicable
+
+6. proof:
+   - P3 or P4 depending detector
+   - transaction_sequence preferred
+
+7. corpus:
+   - positive public admin set
+   - positive public owner set
+   - negative governed update
+   - negative two-step admin accept
+   - inconclusive low-confidence role inference
+
+That is how a vulnerability should be "written" in this system.
+
+
+HOW TO INTERPRET FINDINGS
+=========================
+
+A finding contains:
+- rule_id
+- title
+- category
+- severity
+- status
+- confidence
+- proof_level
+- scope
+- evidence
+- counter_evidence_checked
+- proof details
+
+Common statuses:
+- probable_vulnerability
+- suspicious_behavior
+- suppressed_by_counter_evidence
+- analysis_inconclusive
+
+Important:
+- analysis_inconclusive means the structural shape may be present, but the recovered evidence quality is too weak for a strong claim.
+
+
+OPTIONAL WITNESS BACKENDS
+=========================
+
+These are optional corroboration layers:
+- slither
+- mythril
+- halmos
+- echidna
+
+Principle:
+- the native detector still decides the base match;
+- optional backends may strengthen or downgrade confidence;
+- they must not be required for the core detector to run.
+
+
+CURRENT COMMANDS
+================
+
+Generate behavior JSON:
+
+    python3 -m evm_decon --file contract.hex --format json --output contract.audit.json
+
+Run detectors:
+
+    python3 -m evm_check --facts contract.audit.json --rules rules/core
+
+Run one-shot audit:
+
+    python3 -m evm_audit --file contract.hex --rules rules/core --format json
+
+Run one-shot API output:
+
+    python3 -m evm_audit --file contract.hex --rules rules/core --format api-json
+
+Run one-shot API output from raw hex:
+
+    python3 -m evm_audit --hex "0x6080..." --rules rules/core --format api-json
+
+Scaffold a detector:
+
+    python3 -m evm_rule init access.example.detector
+
+Validate a detector:
+
+    python3 -m evm_rule validate rules/core/access.public_privileged_slot_poisoning.json
+
+Lint for shallow detector mistakes:
+
+    python3 -m evm_rule doctor rules/core/access.public_privileged_slot_poisoning.json
+
+Test a detector against its corpus:
+
+    python3 -m evm_rule test rules/core/access.public_privileged_slot_poisoning.json corpus/access_slot_poisoning
+
+Explain a detector match:
+
+    python3 -m evm_rule explain rules/core/defi.rounding.assumed_actual_balance_mismatch.json corpus/rounding/positive_balancer_like.audit.json
+
+
+IMPORTANT PHILOSOPHY
+====================
+
+The project is trying to be:
+- bytecode-first,
+- behavior-based,
+- state-join aware,
+- counter-evidence aware,
+- test-driven,
+- robust against unknown selectors and absent source.
+
+It is explicitly trying NOT to be:
+- a regex matcher over source,
+- a detector set hardcoded to a few contract families,
+- a benchmark-only ruleset,
+- a name-based rules engine.
+
+IF AN AI IS ASKED TO MODIFY THIS PROJECT
+========================================
+
+The AI should preserve these invariants:
+
+1. Bytecode-first analysis remains primary.
+2. Profiles remain metadata-only.
+3. Detectors remain vulnerability logic only.
+4. Corpus remains test-only.
+5. Names/selectors remain labels, not primary evidence.
+6. Stateful detectors use explicit bindings and joins.
+7. Serious detectors require sensitive effects and real counter-evidence.
+8. High/critical findings require meaningful proof and analysis gates.
+9. Proxy contracts must be recognized and treated appropriately.
+10. Path-verified tags must be preferred over coarse tags for high/critical rules.
+
+
+BYTECODE FINGERPRINTING AND PROXY AWARENESS
+============================================
+
+The engine includes a bytecode fingerprinting module (evm_decon/known_bytecodes.py)
+that detects well-known contract patterns from raw bytecode:
+
+Known patterns detected:
+- ERC-1967 proxy storage slots (implementation, admin, beacon, rollback)
+- Proxy forwarding pattern (CALLDATACOPY + DELEGATECALL + RETURNDATACOPY + switch)
+- UUPS proxy (proxiableUUID selector 0x52d1902d)
+- ERC-1167 minimal proxy clones (with implementation address extraction)
+- Vyper minimal proxy clones (alternative bytecode pattern)
+- Diamond Proxy (EIP-2535) via loupe function selectors
+- Gnosis Safe Proxy via masterCopy()/singleton() + SLOAD(0)
+- Compound Unitroller via two-step upgrade selectors
+- EIP-897 DelegateProxy via proxyType() + implementation()
+- Generic slot-0 proxy (SLOAD(0) -> DELEGATECALL heuristic)
+- OpenZeppelin reentrancy guard constants (_NOT_ENTERED=1, _ENTERED=2)
+- Initializer patterns (Initializable contract guard)
+
+PROXY TYPE TAXONOMY:
+
+    TRANSPARENT_PROXY       - OpenZeppelin TransparentUpgradeableProxy (EIP-1967)
+    UUPS_PROXY              - UUPS proxy (EIP-1822/EIP-1967)
+    BEACON_PROXY            - Beacon proxy (EIP-1967)
+    ERC1967_PROXY           - Generic EIP-1967 proxy
+    ERC1167_CLONE           - EIP-1167 minimal proxy clone (immutable)
+    VYPER_MINIMAL_PROXY     - Vyper-based EIP-1167 clone variant
+    DIAMOND_PROXY           - Diamond multi-facet proxy (EIP-2535)
+    GNOSIS_SAFE_PROXY       - Gnosis Safe proxy (slot-0 masterCopy)
+    COMPOUND_UNITROLLER     - Compound Unitroller (two-step upgrade)
+    EIP897_DELEGATE_PROXY   - EIP-897 DelegateProxy
+    SLOT0_PROXY             - Generic slot-0 storage proxy
+    GENERIC_PROXY           - Unclassified proxy with forwarding
+
+The fingerprint emits contract-level tags that are propagated to ALL functions:
+
+    KNOWN_SAFE_PROXY_PATTERN    - any recognized safe proxy type
+    proxy_safe_delegatecall     - proxy DELEGATECALL is operational, not vulnerable
+    PROXY_FORWARDING_PATTERN    - proxy forwarding delegatecall with switch(result)
+    DIAMOND_FACET_ROUTING       - Diamond selector-to-facet routing (not a vuln)
+    TWO_STEP_UPGRADE            - two-step upgrade acceptance pattern
+    IMPLEMENTATION_ADDRESS_EXTRACTED - implementation address found in bytecode
+    ERC1967_PROXY               - contract uses ERC-1967 implementation slot
+    ADMIN_GUARD                 - admin access control detected from bytecode
+    proxy_admin_guard           - ERC-1967 admin slot implies admin-guarded upgrades
+
+IMPORTANT FOR NEW RULES: Every rule that can fire on proxy contracts MUST include
+these tags in counter_evidence.suppress_if_any or counter_evidence.downgrade_if_any:
+
+    "suppress_if_any": [
+        "PROXY_FORWARDING_PATTERN",
+        "ERC1967_PROXY",
+        "KNOWN_SAFE_PROXY_PATTERN",
+        "proxy_safe_delegatecall",
+        "DIAMOND_PROXY",
+        "GNOSIS_SAFE_PROXY",
+        "COMPOUND_UNITROLLER"
+    ],
+    "downgrade_if_any": [
+        "TRANSPARENT_PROXY",
+        "UUPS_PROXY",
+        "BEACON_PROXY",
+        "SLOT0_PROXY",
+        "TWO_STEP_UPGRADE"
+    ]
+
+Failure to add proxy-awareness to rules will cause false positives on the
+most common contract type deployed on Ethereum (upgradeable proxies).
+
+
+PATH-VERIFIED TAGS
+==================
+
+The behavior IR emits two levels of reentrancy-related tags:
+
+1. VERIFIED_STATE_WRITE_AFTER_CALL
+   - Confirmed via CFG analysis that the SSTORE is on a path reachable from
+     the CALL block's successors
+   - Safe to use as primary evidence for high/critical findings
+
+2. UNVERIFIED_STATE_WRITE_AFTER_CALL
+   - Only confirmed by flat action order (action index of SSTORE > CALL)
+   - The SSTORE may be in a predecessor block or on a different branch
+   - Rules should use this in inconclusive_if_any, NOT in suppress_if_any
+
+3. STATE_WRITE_AFTER_CALL (legacy)
+   - Emitted for backward compatibility
+   - Present whenever either verified or unverified version is present
+   - New rules should prefer VERIFIED_STATE_WRITE_AFTER_CALL
+
+IMPORTANT: For new reentrancy rules, use VERIFIED_STATE_WRITE_AFTER_CALL
+in facts_all. Using the unverified tag alone will generate false positives
+on proxy contracts where SSTORE happens before a conditional DELEGATECALL.
+
+
+BYTECODE-LEVEL GUARD DETECTION
+===============================
+
+The behavior IR detects access control guards directly from bytecode patterns:
+
+Pattern 1: CALLER -> SLOAD(slot) -> EQ -> JUMPI -> REVERT
+   Tags: GUARDED, AUTH_GUARDED, ADMIN_GUARD, admin_guarded_function
+
+Pattern 2: CALLER -> SLOAD -> SUB -> JUMPI (older Solidity EQ pattern)
+   Tags: GUARDED, AUTH_GUARDED
+
+Pattern 3: Reentrancy guard (SLOAD -> PUSH 1/2 -> EQ -> JUMPI -> SSTORE)
+   Tags: REENTRANCY_GUARD, reentrancy_guard, mutex_lock
+
+When a REVERT block follows the JUMPI, STRONG_AUTH_GUARD is added.
+
+These tags are detected from bytecode, NOT from function names. This means
+they work even for contracts where selectors cannot be resolved.
+
+
+CROSS-BLOCK RETURN VALUE CHECKING
+==================================
+
+The return_value_checked function follows successor blocks via CFG edges
+to detect return value handling across basic block boundaries.
+
+Standard Solidity: CALL -> ISZERO in same block -> checked
+Proxy assembly:    CALL -> JUMPI to successor block -> ISZERO in successor -> checked
+
+The cross-block checker:
+1. First checks the same block (fast path)
+2. If no check found, follows block.exits_to for up to 3 hops
+3. If ISZERO, RETURNDATASIZE, RETURNDATACOPY, or JUMPI found in successor -> checked
+4. If JUMPI found right after CALL -> the success bool IS the branch condition -> checked
+
+This prevents false UNCHECKED_RETURN_VALUE tags on proxy contracts that use
+assembly switch(result) { case 0 { revert } default { return } }.
+
+
+COMMON FALSE POSITIVE PATTERNS TO AVOID
+========================================
+
+When authoring rules, be aware of these documented false positive patterns:
+
+1. Proxy upgrade functions (upgradeTo, upgradeToAndCall):
+   - Always have DELEGATECALL
+   - Always have SSTORE (setting implementation slot)
+   - Always have admin guard (ifAdmin modifier)
+   - Are NOT reentrancy vulnerabilities
+   - Are NOT unchecked return value issues
+
+2. Proxy forwarding (fallback/receive):
+   - Uses DELEGATECALL + assembly switch
+   - The return value IS checked via the switch
+   - Is NOT a storage-controlled delegatecall vulnerability when using ERC-1967 slots
+
+3. Initializer functions:
+   - Have SSTORE to set _initialized
+   - Have a single-use guard that prevents re-initialization
+   - Are NOT privilege escalation when properly guarded
+
+4. Admin-only functions:
+   - Protected by CALLER -> SLOAD -> EQ -> JUMPI -> REVERT
+   - Reentrancy in admin functions is not exploitable by external attackers
+   - State writes after calls in admin functions should be downgraded, not flagged
+
+
+RULE QUALITY CHECKLIST (EXPANDED)
+=================================
+
+Before submitting a new rule, verify:
+
+- Does the rule have proxy-awareness counter-evidence?
+- Does the rule use VERIFIED tags instead of coarse tags for critical findings?
+- Are analysis_requirements thresholds tight enough?
+    - max_unknown_action_expression_count <= 50 for high/critical
+    - max_unresolved_selector_count <= 15 for high/critical
+    - min_path_reachability_confidence >= 0.7 for high/critical
+- Does counter_evidence include ADMIN_GUARD and admin_guarded_function?
+- Does counter_evidence include REENTRANCY_GUARD for reentrancy rules?
+- Does the rule avoid matching purely on DELEGATECALL presence for proxy contracts?
+- Does the rule require a sensitive effect (not just structural tags)?
+- If the rule uses STATE_WRITE_AFTER_CALL, does it prefer the verified version?
+- Has the rule been tested against at least one known proxy contract (negative case)?
+- Does the rule have at least 2 negative fixtures including a proxy contract?
+
+
+BOTTOM LINE
+===========
+
+If you only remember one thing, remember this:
+
+    profiles help interpret contracts
+    detectors define vulnerability logic
+    corpus proves detectors are correct
+
+And for serious bugs:
+
+    do not detect "role slot written"
+    detect "the same attacker-controlled slot is later trusted in authorization for a sensitive effect"
+
+That is the core design of this project.

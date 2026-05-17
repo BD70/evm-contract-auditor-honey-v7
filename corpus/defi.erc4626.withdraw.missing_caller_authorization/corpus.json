@@ -1,0 +1,74 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "defi.erc4626.withdraw.missing_caller_authorization",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "erc4626_withdraw_no_auth_positive",
+      "audit_json": "positive_erc4626_withdraw_no_auth.audit.json",
+      "description": "ERC4626 vault overrides withdraw(), burns owner param shares, transfers to receiver param, no caller==owner check, no allowance check. Modeled on YieldCore RWAVault.",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.erc4626.withdraw.missing_caller_authorization"
+        ]
+      }
+    },
+    {
+      "id": "erc4626_redeem_no_auth_positive",
+      "audit_json": "positive_erc4626_redeem_no_auth.audit.json",
+      "description": "Same vulnerability pattern but on redeem() function override. Burns owner shares, transfers to receiver, no authorization.",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.erc4626.withdraw.missing_caller_authorization"
+        ]
+      }
+    },
+    {
+      "id": "standard_erc4626_internal_withdraw_negative",
+      "audit_json": "negative_standard_erc4626.audit.json",
+      "description": "Standard OpenZeppelin ERC4626 using _withdraw() with _spendAllowance check. Should NOT fire.",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "defi.erc4626.withdraw.missing_caller_authorization"
+        ]
+      }
+    },
+    {
+      "id": "explicit_owner_guard_negative",
+      "audit_json": "negative_owner_guard.audit.json",
+      "description": "Custom ERC4626 override that includes explicit require(msg.sender == owner) before burn+transfer. Should NOT fire.",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "defi.erc4626.withdraw.missing_caller_authorization"
+        ]
+      }
+    },
+    {
+      "id": "weak_function_coverage_inconclusive",
+      "audit_json": "inconclusive_weak_coverage.audit.json",
+      "description": "Function looks like withdraw override but function coverage is too low to confirm authorization absence.",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "defi.erc4626.withdraw.missing_caller_authorization"
+        ]
+      }
+    }
+  ]
+}

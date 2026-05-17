@@ -1,0 +1,151 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "overflow.unchecked_arithmetic",
+    "internal_name": "reference_overflow_unchecked_arithmetic_v1",
+    "title": "Arithmetic operations without overflow/underflow protection in pre-0.8.0 contract",
+    "category": "arithmetic",
+    "severity": "medium",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.72,
+      "with_witness": 0.91,
+      "inconclusive": 0.32
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "integer_overflow_underflow",
+    "attack_thesis": "Arithmetic operations in a pre-0.8.0 Solidity contract lack SafeMath or compiler-level overflow checks, allowing an attacker to wrap values past their bounds to manipulate balances, allowances, or other accounting state.",
+    "protected_asset_or_effect": [
+      "accounting_integrity",
+      "balance_integrity"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "UNCHECKED_ARITHMETIC"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "accounting_mutation",
+      "asset_transfer"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "SAFE_MATH_USAGE",
+      "solidity_0.8_plus",
+      "CHECKED_ARITHMETIC"
+    ],
+    "downgrade_if_any": [
+      "low_value_operation"
+    ],
+    "inconclusive_if_any": [
+      "compiler_version_unknown"
+    ],
+    "manual_review_if_any": [
+      "intentional_unchecked_block"
+    ]
+  },
+  "proof": {
+    "min_level": "P2",
+    "preferred_witness": "deterministic_arithmetic_witness",
+    "acceptable_witnesses": [
+      "deterministic_arithmetic_witness",
+      "symbolic_counterexample"
+    ],
+    "witness_generation": {
+      "native": "arithmetic_overflow_analysis",
+      "optional_adapters": [
+        "mythril",
+        "halmos"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.5,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 100,
+    "max_unresolved_selector_count": 30,
+    "max_unresolved_paths": 20,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/unchecked_arithmetic",
+    "positive_fixtures_min": 1,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "pre_080_unchecked_positive",
+      "solidity_080_plus_negative",
+      "safemath_usage_negative",
+      "low_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Unchecked arithmetic enables integer overflow or underflow",
+    "summary": "Matches functions in pre-0.8.0 Solidity contracts that perform arithmetic operations without SafeMath or equivalent overflow protection, where the result affects accounting or asset transfers.",
+    "user_summary": "This function performs arithmetic (addition, subtraction, or multiplication) without overflow or underflow protection. In Solidity versions before 0.8.0, these operations silently wrap around, which an attacker can exploit to manipulate balances, allowances, or other critical accounting values.",
+    "technical_summary": "The detector identifies ADD, SUB, and MUL opcodes in functions lacking SafeMath wrapper calls or compiler-level checked arithmetic (Solidity >= 0.8.0). When these unchecked operations flow into storage writes affecting balances or accounting state, the function is vulnerable to integer overflow or underflow attacks.",
+    "exploit_narrative": "The attacker identifies a function that subtracts from a balance without underflow protection. By transferring more than their balance, the subtraction wraps around to a very large number, effectively granting the attacker an enormous balance. This inflated balance can then be used to drain the contract's assets.",
+    "exploit_preconditions": [
+      "the contract is compiled with Solidity < 0.8.0 or uses an unchecked block",
+      "arithmetic operations do not use SafeMath or equivalent overflow-safe library",
+      "the result of the unchecked arithmetic flows into accounting state or controls asset transfers"
+    ],
+    "remediation_hints": [
+      "upgrade to Solidity >= 0.8.0 for built-in overflow/underflow checks",
+      "use OpenZeppelin SafeMath for all arithmetic on user-influenced values",
+      "add explicit require() checks before arithmetic operations on critical values"
+    ],
+    "sarif": {
+      "taxa": [
+        "arithmetic",
+        "integer_overflow"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "arithmetic operates on attacker-controlled values without overflow check",
+      "contract compiled without 0.8+ overflow protection"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "supply crafted values that cause integer overflow in arithmetic operation",
+        "expected_state": "overflow produces unexpected small/large value used in downstream accounting or access check"
+      }
+    ],
+    "success_condition": "attacker exploits overflow to mint excess tokens, bypass balance checks, or corrupt accounting",
+    "environment_requirements": [
+      "deployed pre-0.8 contract or explicit unchecked block"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

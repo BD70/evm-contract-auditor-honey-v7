@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "defi.swap.missing_slippage_or_deadline",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "swap_no_slippage_check_positive",
+      "audit_json": "positive_no_slippage.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.swap.missing_slippage_or_deadline"
+        ]
+      }
+    },
+    {
+      "id": "no_deadline_check_positive",
+      "audit_json": "positive_no_deadline.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.swap.missing_slippage_or_deadline"
+        ]
+      }
+    },
+    {
+      "id": "amountOut_ge_minOut_checked_negative",
+      "audit_json": "negative_slippage_checked.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "defi.swap.missing_slippage_or_deadline"
+        ]
+      }
+    },
+    {
+      "id": "custom_accounting_inconclusive",
+      "audit_json": "inconclusive_custom_accounting.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "defi.swap.missing_slippage_or_deadline"
+        ]
+      }
+    }
+  ]
+}

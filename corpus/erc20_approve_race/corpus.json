@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "token.erc20_approve_race",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "approve_no_companion_positive",
+      "audit_json": "positive_approve_no_companion.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.erc20_approve_race"
+        ]
+      }
+    },
+    {
+      "id": "approve_no_increase_positive",
+      "audit_json": "positive_approve_no_increase.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.erc20_approve_race"
+        ]
+      }
+    },
+    {
+      "id": "permit2_companion_negative",
+      "audit_json": "negative_permit2_companion.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "token.erc20_approve_race"
+        ]
+      }
+    },
+    {
+      "id": "allowance_pattern_unresolved_inconclusive",
+      "audit_json": "inconclusive_allowance_unresolved.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "token.erc20_approve_race"
+        ]
+      }
+    }
+  ]
+}

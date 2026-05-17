@@ -1,0 +1,138 @@
+{
+  "name": "frost_fixture",
+  "selectors": [
+    {"selector": "0xa9059cbb", "signature": "transfer(address,uint256)"},
+    {"selector": "0x23b872dd", "signature": "transferFrom(address,address,uint256)"},
+    {"selector": "0xacb2ad6f", "signature": "transferFee()"},
+    {"selector": "0xb4132870", "signature": "maxSupplyHit()"},
+    {"selector": "0x8f02bb5b", "signature": "setTransferFee(uint256)"},
+    {"selector": "0xa8186558", "signature": "recipientWhitelist(address)"},
+    {"selector": "0x71e7a802", "signature": "currentBaseRate()"},
+    {"selector": "0x76671808", "signature": "currentEpoch()"},
+    {"selector": "0x7b2bad2b", "signature": "addToTransferWhitelist(bool,address)"},
+    {"selector": "0x8222f07d", "signature": "senderWhitelist(address)"},
+    {"selector": "0x53fdfab0", "signature": "updateEpoch(uint256,uint256)"},
+    {"selector": "0x308ee248", "signature": "accumulating()"},
+    {"selector": "0x2666ed0a", "signature": "removeFromTransferWhitelist(bool,address)"},
+    {"selector": "0x0fde9c05", "signature": "calculateUniswapPoolAddress()"},
+    {"selector": "0x104aeef8", "signature": "currentMaxSupply()"},
+    {"selector": "0x055ad42e", "signature": "currentPhase()"}
+  ],
+  "patterns": [
+    {
+      "name": "fixture:FROST",
+      "required_selectors": [
+        "transfer(address,uint256)",
+        "transferFrom(address,address,uint256)",
+        "transferFee()",
+        "senderWhitelist(address)",
+        "recipientWhitelist(address)",
+        "setTransferFee(uint256)"
+      ],
+      "optional_selectors": [
+        "addToTransferWhitelist(bool,address)",
+        "removeFromTransferWhitelist(bool,address)",
+        "updateEpoch(uint256,uint256)",
+        "currentMaxSupply()",
+        "currentBaseRate()"
+      ],
+      "roles": ["fixture", "frost", "erc20_fee_token"],
+      "confidence": 0.99
+    }
+  ],
+  "expected_permissionless": [
+    "transfer(address,uint256)",
+    "transferFrom(address,address,uint256)",
+    "approve(address,uint256)"
+  ],
+  "storage_anchors": [
+    {
+      "requires_selectors": [
+        "transfer(address,uint256)",
+        "transferFrom(address,address,uint256)",
+        "transferFee()",
+        "senderWhitelist(address)",
+        "recipientWhitelist(address)"
+      ],
+      "slots": [
+        {"slot": 0, "name": "_addressRegistry", "kind": "value", "value_type": "address", "confidence": 0.9},
+        {"slot": 1, "name": "_balances", "kind": "mapping", "value_type": "uint256", "key_types": ["address"], "confidence": 0.95},
+        {"slot": 2, "name": "_allowances", "kind": "nested_mapping", "value_type": "uint256", "key_types": ["address", "address"], "confidence": 0.95},
+        {"slot": 3, "name": "_totalSupply", "kind": "value", "value_type": "uint256", "confidence": 0.95},
+        {"slot": 7, "name": "maxSupplyHit", "kind": "value", "value_type": "bool", "confidence": 0.9},
+        {"slot": 8, "name": "transferFee", "kind": "value", "value_type": "uint256", "confidence": 0.9},
+        {"slot": 9, "name": "currentEpoch", "kind": "value", "value_type": "uint256", "confidence": 0.9},
+        {"slot": 10, "name": "currentPhase", "kind": "value", "value_type": "uint256", "confidence": 0.9},
+        {"slot": 11, "name": "epochMaxSupply", "kind": "dynamic_array", "value_type": "uint256", "confidence": 0.85},
+        {"slot": 12, "name": "epochBaseRate", "kind": "dynamic_array", "value_type": "uint256", "confidence": 0.85},
+        {"slot": 13, "name": "senderWhitelist", "kind": "mapping", "value_type": "bool", "key_types": ["address"], "confidence": 0.9},
+        {"slot": 14, "name": "recipientWhitelist", "kind": "mapping", "value_type": "bool", "key_types": ["address"], "confidence": 0.9}
+      ]
+    }
+  ],
+  "function_overrides": {
+    "transfer(address,uint256)": {
+      "mutability": "nonpayable",
+      "state_reads": ["_balances[sender]", "_balances[recipient]", "transferFee", "senderWhitelist[sender]", "recipientWhitelist[recipient]"],
+      "state_writes": [
+        "_balances[avalancheAddress] <- _balances[avalancheAddress] + transferFeeAmount",
+        "_balances[sender] <- _balances[sender] - tokensToTransfer",
+        "_balances[recipient] <- _balances[recipient] + tokensToTransfer"
+      ],
+      "guards": ["calldatasize_check", "non_zero_sender", "non_zero_recipient"],
+      "external_calls": [
+        "avalanche.addFrostReward(sender, transferFeeAmount) when !whitelisted",
+        "avalanche.addFrostReward(sender, tokensToTransfer) when recipient == avalancheAddress"
+      ],
+      "events": ["Transfer"],
+      "branches": [
+        "transfer fee path is skipped when sender or recipient is whitelisted",
+        "sender debit uses tokensToTransfer instead of full amount"
+      ]
+    },
+    "transferFrom(address,address,uint256)": {
+      "mutability": "nonpayable",
+      "state_reads": ["_allowances[from][msg.sender]", "_balances[from]", "_balances[to]", "transferFee", "senderWhitelist[from]", "recipientWhitelist[to]"],
+      "state_writes": [
+        "_allowances[from][msg.sender] <- _allowances[from][msg.sender] - amount",
+        "_balances[avalancheAddress] <- _balances[avalancheAddress] + transferFeeAmount",
+        "_balances[from] <- _balances[from] - tokensToTransfer",
+        "_balances[to] <- _balances[to] + tokensToTransfer"
+      ],
+      "guards": ["calldatasize_check", "non_zero_sender", "non_zero_recipient"],
+      "external_calls": [
+        "avalanche.addFrostReward(from, transferFeeAmount) when !whitelisted",
+        "avalanche.addFrostReward(from, tokensToTransfer) when to == avalancheAddress"
+      ],
+      "events": ["Transfer", "Approval"],
+      "branches": [
+        "transfer fee path is skipped when sender or recipient is whitelisted",
+        "sender debit uses tokensToTransfer instead of full amount"
+      ]
+    },
+    "setTransferFee(uint256)": {
+      "mutability": "nonpayable",
+      "state_reads": ["transferFee"],
+      "state_writes": ["transferFee <- _transferFee"],
+      "guards": ["HasPatrol(ADMIN)", "fee_cap_guard"]
+    },
+    "addToTransferWhitelist(bool,address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["senderWhitelist[address]", "recipientWhitelist[address]"],
+      "state_writes": [
+        "senderWhitelist[address] <- true when senderMode",
+        "recipientWhitelist[address] <- true when !senderMode"
+      ],
+      "guards": ["HasPatrol(ADMIN)"]
+    },
+    "removeFromTransferWhitelist(bool,address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["senderWhitelist[address]", "recipientWhitelist[address]"],
+      "state_writes": [
+        "senderWhitelist[address] <- false when senderMode",
+        "recipientWhitelist[address] <- false when !senderMode"
+      ],
+      "guards": ["HasPatrol(ADMIN)"]
+    }
+  }
+}

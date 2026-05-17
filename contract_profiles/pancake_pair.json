@@ -1,0 +1,143 @@
+{
+  "name": "pancake_pair_fixture",
+  "selectors": [
+    {"selector": "0xc45a0155", "signature": "factory()"},
+    {"selector": "0x0dfe1681", "signature": "token0()"},
+    {"selector": "0xd21220a7", "signature": "token1()"},
+    {"selector": "0x0902f1ac", "signature": "getReserves()"},
+    {"selector": "0x5909c0d5", "signature": "price0CumulativeLast()"},
+    {"selector": "0x5a3d5493", "signature": "price1CumulativeLast()"},
+    {"selector": "0x7464fc3d", "signature": "kLast()"},
+    {"selector": "0xba9a7a56", "signature": "MINIMUM_LIQUIDITY()"},
+    {"selector": "0x485cc955", "signature": "initialize(address,address)"},
+    {"selector": "0x6a627842", "signature": "mint(address)"},
+    {"selector": "0x89afcb44", "signature": "burn(address)"},
+    {"selector": "0x022c0d9f", "signature": "swap(uint256,uint256,address,bytes)"},
+    {"selector": "0xbc25cf77", "signature": "skim(address)"},
+    {"selector": "0xfff6cae9", "signature": "sync()"}
+  ],
+  "patterns": [
+    {
+      "name": "fixture:PancakePair",
+      "required_selectors": [
+        "factory()",
+        "token0()",
+        "token1()",
+        "getReserves()",
+        "mint(address)",
+        "burn(address)",
+        "swap(uint256,uint256,address,bytes)",
+        "skim(address)",
+        "sync()"
+      ],
+      "optional_selectors": [
+        "price0CumulativeLast()",
+        "price1CumulativeLast()",
+        "kLast()",
+        "MINIMUM_LIQUIDITY()",
+        "initialize(address,address)"
+      ],
+      "roles": ["fixture", "amm_pair", "lp_token"],
+      "confidence": 0.98
+    }
+  ],
+  "expected_permissionless": [
+    "mint(address)",
+    "burn(address)",
+    "swap(uint256,uint256,address,bytes)",
+    "skim(address)",
+    "sync()"
+  ],
+  "suppress_patterns": [
+    "MintBurn"
+  ],
+  "storage_anchors": [
+    {
+      "requires_selectors": [
+        "factory()",
+        "token0()",
+        "token1()",
+        "getReserves()",
+        "mint(address)",
+        "burn(address)",
+        "swap(uint256,uint256,address,bytes)",
+        "skim(address)",
+        "sync()"
+      ],
+      "slots": [
+        {"slot": 0, "name": "totalSupply", "kind": "value", "value_type": "uint256", "confidence": 0.95},
+        {"slot": 1, "name": "balanceOf", "kind": "mapping", "value_type": "uint256", "key_types": ["address"], "confidence": 0.95},
+        {"slot": 2, "name": "allowance", "kind": "nested_mapping", "value_type": "uint256", "key_types": ["address", "address"], "confidence": 0.95},
+        {"slot": 3, "name": "DOMAIN_SEPARATOR", "kind": "value", "value_type": "bytes32", "confidence": 0.95},
+        {"slot": 4, "name": "nonces", "kind": "mapping", "value_type": "uint256", "key_types": ["address"], "confidence": 0.95},
+        {"slot": 5, "name": "factory", "kind": "value", "value_type": "address", "confidence": 0.95},
+        {"slot": 6, "name": "token0", "kind": "value", "value_type": "address", "confidence": 0.95},
+        {"slot": 7, "name": "token1", "kind": "value", "value_type": "address", "confidence": 0.95},
+        {
+          "slot": 8,
+          "name": "reserves",
+          "kind": "packed",
+          "confidence": 0.95,
+          "packing": [
+            {"offset": 0, "width": 112, "type": "uint112", "name": "reserve0"},
+            {"offset": 112, "width": 112, "type": "uint112", "name": "reserve1"},
+            {"offset": 224, "width": 32, "type": "uint32", "name": "blockTimestampLast"}
+          ]
+        },
+        {"slot": 9, "name": "price0CumulativeLast", "kind": "value", "value_type": "uint256", "confidence": 0.95},
+        {"slot": 10, "name": "price1CumulativeLast", "kind": "value", "value_type": "uint256", "confidence": 0.95},
+        {"slot": 11, "name": "kLast", "kind": "value", "value_type": "uint256", "confidence": 0.95},
+        {"slot": 12, "name": "unlocked", "kind": "value", "value_type": "uint256", "confidence": 0.95}
+      ]
+    }
+  ],
+  "function_overrides": {
+    "initialize(address,address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["factory"],
+      "state_writes": ["token0 <- _token0", "token1 <- _token1"],
+      "guards": ["factoryOnly"],
+      "branches": ["trust assumption: fixture factory initializes pair tokens"]
+    },
+    "mint(address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["reserve0", "reserve1", "balanceOf[address(this)]", "totalSupply", "kLast", "unlocked"],
+      "state_writes": ["totalSupply", "balanceOf[to]", "reserve0/reserve1/blockTimestampLast", "kLast", "unlocked"],
+      "guards": ["lock", "sufficient_liquidity_minted"],
+      "external_calls": ["token0.balanceOf(address(this))", "token1.balanceOf(address(this))"],
+      "events": ["Mint", "Transfer", "Sync"]
+    },
+    "burn(address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["reserve0", "reserve1", "balanceOf[address(this)]", "totalSupply", "kLast", "token0", "token1", "unlocked"],
+      "state_writes": ["totalSupply", "balanceOf[address(this)]", "reserve0/reserve1/blockTimestampLast", "kLast", "unlocked"],
+      "guards": ["lock", "sufficient_liquidity_burned"],
+      "external_calls": ["token0.transfer(to, amount0)", "token1.transfer(to, amount1)"],
+      "events": ["Burn", "Transfer", "Sync"]
+    },
+    "swap(uint256,uint256,address,bytes)": {
+      "mutability": "nonpayable",
+      "state_reads": ["reserve0", "reserve1", "token0", "token1", "unlocked"],
+      "state_writes": ["reserve0/reserve1/blockTimestampLast", "price0CumulativeLast", "price1CumulativeLast", "unlocked"],
+      "guards": ["lock", "sufficient_output", "sufficient_liquidity", "invalid_to", "sufficient_input", "constant_product_fee_adjusted_invariant"],
+      "external_calls": ["token0.transfer(to, amount0Out)", "token1.transfer(to, amount1Out)", "to.pancakeCall(sender, amount0Out, amount1Out, data) when data.length > 0"],
+      "events": ["Swap", "Sync"],
+      "branches": ["flash-swap callback is fixture-expected; invariant checked after callback"]
+    },
+    "skim(address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["token0", "token1", "reserve0", "reserve1", "unlocked"],
+      "state_writes": ["unlocked"],
+      "guards": ["lock"],
+      "external_calls": ["token0.transfer(to, balance0 - reserve0)", "token1.transfer(to, balance1 - reserve1)"]
+    },
+    "sync()": {
+      "mutability": "nonpayable",
+      "state_reads": ["token0", "token1", "unlocked"],
+      "state_writes": ["reserve0/reserve1/blockTimestampLast", "price0CumulativeLast", "price1CumulativeLast", "unlocked"],
+      "guards": ["lock"],
+      "external_calls": ["token0.balanceOf(address(this))", "token1.balanceOf(address(this))"],
+      "events": ["Sync"]
+    }
+  }
+}

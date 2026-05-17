@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "defi.erc4626.first_depositor_inflation",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "totalsupply_zero_no_offset_positive",
+      "audit_json": "positive_no_offset.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.erc4626.first_depositor_inflation"
+        ]
+      }
+    },
+    {
+      "id": "no_dead_shares_positive",
+      "audit_json": "positive_no_dead_shares.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.erc4626.first_depositor_inflation"
+        ]
+      }
+    },
+    {
+      "id": "virtual_shares_offset_negative",
+      "audit_json": "negative_virtual_shares.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "defi.erc4626.first_depositor_inflation"
+        ]
+      }
+    },
+    {
+      "id": "unresolved_share_path_inconclusive",
+      "audit_json": "inconclusive_unresolved_share.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "defi.erc4626.first_depositor_inflation"
+        ]
+      }
+    }
+  ]
+}

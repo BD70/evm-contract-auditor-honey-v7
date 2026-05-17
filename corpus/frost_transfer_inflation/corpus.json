@@ -1,0 +1,110 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "token.transfer.sender_debit_credit_mismatch",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive",
+    "real_runtime"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "frost_fee_transfer_positive",
+      "audit_json": "positive_frost_fee.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "self_transfer_positive",
+      "audit_json": "positive_self_transfer.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "standard_transfer_negative",
+      "audit_json": "negative_standard_transfer.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "correct_fee_on_transfer_negative",
+      "audit_json": "negative_correct_fee.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "mint_backed_fee_negative",
+      "audit_json": "negative_mint_backed_fee.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "partial_accounting_inconclusive",
+      "audit_json": "inconclusive_partial_accounting.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "weak_path_inconclusive",
+      "audit_json": "inconclusive_weak_path.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "reflection_review_inconclusive",
+      "audit_json": "inconclusive_reflection_rebase.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "real_frost_runtime_positive",
+      "audit_json": "real_frost_runtime.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.transfer.sender_debit_credit_mismatch"
+        ]
+      }
+    }
+  ]
+}

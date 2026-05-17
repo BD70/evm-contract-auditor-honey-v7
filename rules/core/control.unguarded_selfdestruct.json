@@ -1,0 +1,160 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "control.unguarded_selfdestruct",
+    "internal_name": "reference_generic_unguarded_selfdestruct_v1",
+    "title": "Selfdestruct reachable without owner or admin authorization guard",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.82,
+      "with_witness": 0.96,
+      "inconclusive": 0.37
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unguarded_selfdestruct",
+    "attack_thesis": "A function contains a reachable SELFDESTRUCT opcode with no owner, admin, or authorization guard, allowing any external caller to permanently destroy the contract and sweep its ETH balance.",
+    "protected_asset_or_effect": [
+      "contract_self_preservation",
+      "eth_balance_integrity",
+      "service_availability"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "selfdestruct"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "owner_check",
+      "admin_guard",
+      "onlyOwner",
+      "AUTH_GUARDED",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD",
+      "OZ_OWNABLE",
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER"
+    ],
+    "downgrade_if_any": [
+      "timelocked_selfdestruct"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_guard_resolution"
+    ],
+    "manual_review_if_any": [
+      "governance_controlled_selfdestruct"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "symbolic_counterexample"
+    ],
+    "witness_generation": {
+      "native": "selfdestruct_reachability_flow",
+      "optional_adapters": [
+        "mythril",
+        "halmos",
+        "echidna"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.6,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/unguarded_selfdestruct",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "public_selfdestruct_positive",
+      "fallback_selfdestruct_positive",
+      "owner_guarded_negative",
+      "admin_guarded_negative",
+      "weak_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Selfdestruct opcode reachable without authorization guard",
+    "summary": "Matches functions where a SELFDESTRUCT opcode is reachable from an external entry point without any owner, admin, or authorization guard on the execution path.",
+    "user_summary": "This contract can be permanently destroyed by anyone. A function containing the SELFDESTRUCT opcode has no access control, so any caller can invoke it to kill the contract and redirect its entire ETH balance to an address of their choosing.",
+    "technical_summary": "The detector matches functions where the selfdestruct reachable effect is present and no counter-evidence tags (owner_check, admin_guard, onlyOwner, AUTH_GUARDED) appear on the path. The SELFDESTRUCT opcode is irreversible and causes the contract to be deleted from state, forwarding the remaining ETH balance to a designated beneficiary.",
+    "exploit_narrative": "An attacker identifies a contract where SELFDESTRUCT is reachable from an external function with no access restriction. The attacker calls this function, specifying their own address as the beneficiary. The contract is destroyed, all stored ETH is transferred to the attacker, and any dependent contracts or users permanently lose access to the destroyed contract's functionality.",
+    "exploit_preconditions": [
+      "a function has a reachable path to the SELFDESTRUCT opcode",
+      "no owner, admin, or role-based guard restricts who can reach the selfdestruct",
+      "the function is externally callable"
+    ],
+    "remediation_hints": [
+      "add an onlyOwner or equivalent access control modifier to any function that can trigger selfdestruct",
+      "consider removing selfdestruct entirely if the contract does not require self-destruction",
+      "use a two-step process with a timelock for selfdestruct to allow stakeholders to react",
+      "if selfdestruct is intentional, guard it behind a multisig or governance vote"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "selfdestruct"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "SELFDESTRUCT is reachable from external entrypoint",
+      "no strong owner/admin guard on path"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call function reaching SELFDESTRUCT path",
+        "expected_state": "contract self-destructs, ether sent to attacker-controlled beneficiary address"
+      }
+    ],
+    "success_condition": "contract is destroyed and any ether balance is sent to attacker",
+    "environment_requirements": [
+      "deployed contract with ether balance"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 200000
+    }
+  }
+}

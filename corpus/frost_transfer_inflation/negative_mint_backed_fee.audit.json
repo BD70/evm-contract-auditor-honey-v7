@@ -1,0 +1,40 @@
+{
+  "schema": "evm-audit.behavior",
+  "schema_version": "1.0.0",
+  "engine_version": "1.0.0",
+  "ruleset_version": "1.0.0",
+  "bytecode_identity": {"keccak256": "0xfrostn3", "original_keccak256": "0xfrostn3", "runtime_keccak256": "0xfrostn3", "metadata_stripped_keccak256": "0xfrostn3"},
+  "bytecode": {"analysis_hash": "0xfrostn3"},
+  "contract": {"family": "ERC20", "protocol_roles": ["ERC20"], "selectors": {"resolved": [], "unresolved": ["0xa9059cbb"]}},
+  "functions": [
+    {
+      "identity": {"selector": "0xa9059cbb", "name": null, "candidate_names": []},
+      "actions": [{"id": "m0", "type": "SSTORE", "offset": "0x0600", "block": 6}, {"id": "m1", "type": "SSTORE", "offset": "0x0610", "block": 6}, {"id": "m2", "type": "SSTORE", "offset": "0x0620", "block": 6}, {"id": "m3", "type": "SSTORE", "offset": "0x0630", "block": 6}],
+      "state": {"reads": [], "writes": [], "semantic_summary": {"reads": ["_balances[sender]", "_balances[recipient]", "fee"], "writes": ["_balances[sender] <- _balances[sender] - tokensToTransfer", "_balances[rewardPool] <- _balances[rewardPool] + transferFeeAmount", "_balances[recipient] <- _balances[recipient] + tokensToTransfer", "_totalSupply <- _totalSupply + transferFeeAmount"], "events": ["Transfer", "Mint"], "guards": []}},
+      "memory": {"reads": [], "writes": []},
+      "external_calls": [],
+      "arithmetic": [],
+      "accounting": [{"id": "acc5", "kind": "transfer_accounting_summary", "path_id": "0xa9059cbb:path:summary", "gross_amount": "amount", "fee_amount": "transferFeeAmount", "net_amount": "tokensToTransfer", "proved_relation": "tokensToTransfer = amount - transferFeeAmount", "sender_debit": "tokensToTransfer", "recipient_credit": "tokensToTransfer", "fee_credit": "transferFeeAmount", "side_credits": [{"party": "fee", "target": "rewardPool", "amount": "transferFeeAmount", "action_id": "m1"}], "sum_of_credits": "tokensToTransfer + transferFeeAmount", "net_mismatch": "0_or_unproven", "supply_delta": "positive", "balance_sum_delta": "0_or_unproven", "invariant": "sum(balanceOf) == totalSupply", "post_invariant_delta": "0_or_unproven", "mismatch_relation": "credits_consistent_or_unproven", "behavior_tags": ["sender_debit_present", "recipient_credit_present", "side_credit_present", "net_amount_relation_proven", "total_supply_delta_matches_balance_delta", "mint_event_matches_side_credit"], "economic_effects": [], "evidence_refs": {"sender_debit_action": "m0", "recipient_credit_action": "m2", "fee_credit_action": "m1", "side_credit_actions": ["m1"], "total_supply_nonwrite_proof": null}}],
+      "flows": [],
+      "guards": [],
+      "events": ["Transfer", "Mint"],
+      "loops": [],
+      "path_conditions": [],
+      "behavior_tags": ["balance_accounting", "sender_debit_present", "recipient_credit_present", "side_credit_present", "net_amount_relation_proven", "total_supply_delta_matches_balance_delta", "mint_event_matches_side_credit"],
+      "confidence": 0.93,
+      "paths": [{"id": "0xa9059cbb:path:summary", "entry_block": 6, "blocks": [6], "branch_count": 0, "revert_count": 0, "return_count": 1}]
+    }
+  ],
+  "storage": {"layout": [], "reads": [], "writes": []},
+  "memory": {"reads": [], "writes": []},
+  "arithmetic": {"facts": [], "summary": {"count": 0, "fixed_point_floor_count": 0, "precision_loss_candidates": 0}},
+  "calls": [],
+  "events": [],
+  "flows": [],
+  "invariants": [],
+  "assumptions": [],
+  "analysis_warnings": [],
+  "coverage": {"function_count": 1, "functions_with_actions": 1, "function_coverage": 0.96, "unresolved_selector_count": 1, "unknown_action_expression_count": 0, "unresolved_path_count": 0, "storage_role_confidence": 0.89, "path_reachability_confidence": 0.92, "has_unmodeled_terminators": false, "action_count": 4},
+  "state_model": {"schema": "evm-audit.state_model.v1", "schema_version": "1.0.0", "storage_entities": [], "slot_index": [], "path_index": [{"id": "0xa9059cbb:path:summary", "function": "0xa9059cbb", "guard_refs": [], "reachable_effects": [], "authorized_path_effects": [], "reachability_confidence": 0.93}], "guard_catalog": [], "call_index": [], "economic_index": [{"id": "acc5", "function": "0xa9059cbb", "kind": "transfer_accounting_summary", "path_id": "0xa9059cbb:path:summary", "gross_amount": "amount", "fee_amount": "transferFeeAmount", "net_amount": "tokensToTransfer", "proved_relation": "tokensToTransfer = amount - transferFeeAmount", "sender_debit": "tokensToTransfer", "recipient_credit": "tokensToTransfer", "fee_credit": "transferFeeAmount", "side_credits": [{"party": "fee", "target": "rewardPool", "amount": "transferFeeAmount", "action_id": "m1"}], "sum_of_credits": "tokensToTransfer + transferFeeAmount", "net_mismatch": "0_or_unproven", "supply_delta": "positive", "balance_sum_delta": "0_or_unproven", "invariant": "sum(balanceOf) == totalSupply", "post_invariant_delta": "0_or_unproven", "mismatch_relation": "credits_consistent_or_unproven", "effects": [], "evidence_refs": {"sender_debit_action": "m0", "recipient_credit_action": "m2", "fee_credit_action": "m1", "side_credit_actions": ["m1"], "total_supply_nonwrite_proof": null}}], "proxy_index": [], "initializer_index": [], "evidence_index": [{"id": "m0", "kind": "action", "function": "0xa9059cbb", "offset": "0x0600"}, {"id": "m1", "kind": "action", "function": "0xa9059cbb", "offset": "0x0610"}, {"id": "m2", "kind": "action", "function": "0xa9059cbb", "offset": "0x0620"}, {"id": "m3", "kind": "action", "function": "0xa9059cbb", "offset": "0x0630"}]},
+  "checker_findings": []
+}

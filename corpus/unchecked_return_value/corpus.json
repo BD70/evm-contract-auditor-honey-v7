@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "call.unchecked_return_value",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "unchecked_call_basic_positive",
+      "audit_json": "positive_basic.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.unchecked_return_value"
+        ]
+      }
+    },
+    {
+      "id": "unchecked_delegatecall_positive",
+      "audit_json": "positive_delegatecall.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.unchecked_return_value"
+        ]
+      }
+    },
+    {
+      "id": "checked_call_negative",
+      "audit_json": "negative_checked.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "call.unchecked_return_value"
+        ]
+      }
+    },
+    {
+      "id": "safe_transfer_negative",
+      "audit_json": "negative_safe_transfer.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "call.unchecked_return_value"
+        ]
+      }
+    },
+    {
+      "id": "low_coverage_inconclusive",
+      "audit_json": "inconclusive_low_coverage.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "call.unchecked_return_value"
+        ]
+      }
+    }
+  ]
+}

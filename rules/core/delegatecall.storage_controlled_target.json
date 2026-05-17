@@ -1,0 +1,211 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "delegatecall.storage_controlled_target",
+    "internal_name": "reference_generic_storage_controlled_delegatecall_target_v1",
+    "title": "Delegatecall target can be influenced through mutable storage",
+    "category": "delegatecall_storage_corruption",
+    "severity": "high",
+    "scope": "multi_tx",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.77,
+      "with_witness": 0.93,
+      "inconclusive": 0.4
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence",
+      "external_call_resolution_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "storage_controlled_delegatecall_target",
+    "attack_thesis": "A mutable storage slot can influence a later delegatecall target, causing attacker-selected code to execute in the caller storage context.",
+    "protected_asset_or_effect": [
+      "execution_context_integrity",
+      "storage_integrity"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [
+      "delegatecall"
+    ],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "poison_delegate_target_slot",
+        "match": {
+          "storage_write": {
+            "semantic_role_any": [
+              "implementation",
+              "admin",
+              "role",
+              "authorization_predicate"
+            ],
+            "user_controlled_write_value": true,
+            "caller_reachability": "external_untrusted",
+            "caller_constraint": "missing_or_weak",
+            "write_origin_any": [
+              "calldata",
+              "caller"
+            ],
+            "min_role_confidence": 0.7
+          }
+        },
+        "bind": {
+          "slot": "$slot"
+        }
+      },
+      {
+        "id": "use_storage_delegate_target",
+        "match": {
+          "delegatecall": {
+            "same_slot_as": "$slot",
+            "target_origin_any": [
+              "storage"
+            ],
+            "target_controllability": "publicly_mutable_storage"
+          }
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "fixed_delegatecall_target",
+      "erc1167_fixed_clone_target",
+      "target_allowlist",
+      "admin_guard",
+      "ADMIN_GUARD",
+      "proxy_admin_guard",
+      "PROXY_FORWARDING_PATTERN",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD",
+      "DIAMOND_PROXY",
+      "EIP2535_DIAMOND",
+      "DIAMOND_FACET_ROUTING",
+      "GNOSIS_SAFE_PROXY",
+      "SAFE_PROXY",
+      "COMPOUND_UNITROLLER",
+      "EIP897_DELEGATE_PROXY",
+      "proxy_safe_delegatecall"
+    ],
+    "downgrade_if_any": [
+      "manual_module_registry_review",
+      "AUTH_GUARDED",
+      "TRANSPARENT_PROXY",
+      "UUPS_PROXY",
+      "BEACON_PROXY",
+      "SLOT0_PROXY",
+      "TWO_STEP_UPGRADE"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_target_slot",
+      "GENERIC_STORAGE_PROXY"
+    ],
+    "manual_review_if_any": [
+      "plugin_architecture"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "storage_target_sequence",
+      "optional_adapters": [
+        "mythril"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.88,
+    "min_storage_role_confidence": 0.75,
+    "min_path_reachability_confidence": 0.8,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 15,
+    "max_unresolved_paths": 8,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/delegatecall_target",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "storage_target_positive",
+      "implementation_slot_delegatecall_positive",
+      "fixed_clone_negative",
+      "admin_guarded_target_negative",
+      "ambiguous_target_slot_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Mutable storage controls a later delegatecall target",
+    "summary": "Matches user-influenced storage writes that later determine a delegatecall target, excluding fixed ERC-1167 clone behavior and strongly guarded targets.",
+    "user_summary": "The contract may allow an attacker to influence which code it executes with `delegatecall`. That is dangerous because `delegatecall` runs foreign code using the caller's storage, which can lead to total compromise.",
+    "technical_summary": "The detector matches an attacker-controlled write into a storage slot that is later reused as a delegatecall target. The rule excludes fixed clone targets and strongly guarded update paths, and focuses on mutable storage that can redirect execution to attacker-selected logic.",
+    "exploit_narrative": "The attacker first writes or influences a storage-backed implementation or module pointer. Later, the contract performs a delegatecall using that mutated slot, executing attacker-chosen code in the caller's storage context and exposing the full contract state.",
+    "exploit_preconditions": [
+      "delegatecall target is read from mutable storage",
+      "attacker can influence the storage value before the delegatecall path executes"
+    ],
+    "remediation_hints": [
+      "use fixed or allowlisted delegatecall targets",
+      "guard target updates with trusted admin or governance authority",
+      "avoid delegatecall to publicly mutable implementation pointers"
+    ],
+    "sarif": {
+      "taxa": [
+        "delegatecall"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "delegatecall target slot is writable from external call"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "write attacker-controlled address into target slot",
+        "expected_state": "target slot contains malicious contract address"
+      },
+      {
+        "actor": "attacker",
+        "action": "trigger path that reads target slot and issues DELEGATECALL",
+        "expected_state": "DELEGATECALL executes attacker code in contract storage context"
+      }
+    ],
+    "success_condition": "attacker code executes with the storage context of the victim contract",
+    "environment_requirements": [
+      "deployed contract",
+      "attacker-deployed malicious contract"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 1000000
+    }
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "defi.erc4626.first_depositor_inflation",
+    "internal_name": "reference_defi_erc4626_first_depositor_inflation_v1",
+    "title": "ERC4626 vault lacks virtual shares or dead-shares offset enabling first-depositor share-price inflation",
+    "category": "defi_logic",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.72,
+      "with_witness": 0.88,
+      "inconclusive": 0.34
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "share_price_inflation",
+    "attack_thesis": "The vault's share/asset conversion path checks totalSupply == 0 and applies a 1:1 ratio without a virtual-shares offset or dead-shares mint. The first depositor can deposit 1 wei, then donate large assets to skew the share price, causing subsequent depositors to receive 0 shares and lose their deposit.",
+    "protected_asset_or_effect": [
+      "share_price_integrity",
+      "depositor_funds"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [
+      "ERC4626_DEPOSIT_OR_MINT"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "mint",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "totalsupply_zero_branch",
+        "match": {
+          "branch": {
+            "condition_includes": "totalSupply_eq_zero",
+            "no_virtual_shares_offset": true
+          },
+          "reachable_effect_any": [
+            "mint",
+            "accounting_mutation"
+          ]
+        },
+        "bind": {
+          "path": "$deposit_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "virtual_shares_offset_guard",
+      "dead_shares_mint_guard",
+      "minimum_liquidity_guard_eliminates_precision_loss",
+      "oz_erc4626_virtual_shares"
+    ],
+    "downgrade_if_any": [
+      "single_depositor_context",
+      "admin_only_first_deposit"
+    ],
+    "inconclusive_if_any": [
+      "unresolved_share_conversion_path",
+      "custom_accounting_logic"
+    ],
+    "manual_review_if_any": [
+      "permissioned_vault_only"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "totalSupply_zero_branch_trace",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.65,
+    "min_storage_role_confidence": 0.6,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 40,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/erc4626_inflation",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "totalsupply_zero_no_offset_positive",
+      "virtual_shares_offset_negative",
+      "unresolved_share_path_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "ERC4626 first-depositor share inflation: missing virtual shares or dead-shares offset",
+    "summary": "Matches ERC4626 deposit/mint paths with a totalSupply == 0 branch and no virtual-shares offset, enabling share-price inflation by the first depositor.",
+    "user_summary": "This vault is vulnerable to the first-depositor inflation attack. The first depositor can deposit 1 wei to receive 1 share, then donate large amounts of the underlying token to inflate the share price. The next depositor's deposit is rounded down to 0 shares, and they receive nothing back \u2014 losing their entire deposit.",
+    "technical_summary": "The detector identifies ERC4626 deposit or mint paths that branch on totalSupply() == 0 and compute shares without adding a virtual-shares constant (e.g., 10**decimals_offset) or minting dead shares to address(0). This allows share-price manipulation via donation before the first legitimate deposit.",
+    "exploit_narrative": "Attacker monitors for vault deployment. Attacker deposits 1 wei (receives 1 share, share price = 1). Attacker donates 1000 ether to the vault directly (share price inflates to 1000 ether/share). Next user deposits 999 ether; convertToShares returns 0 shares due to rounding. The 999 ether accrues to the attacker's single share.",
+    "exploit_preconditions": [
+      "attacker is the first depositor",
+      "vault has no virtual-shares mechanism",
+      "direct asset donation is possible"
+    ],
+    "remediation_hints": [
+      "add a virtual shares offset per OZ ERC4626 v5 pattern: assets + 1 / totalSupply + 10**_decimalsOffset",
+      "mint dead shares to address(1) during initialization to bootstrap share price",
+      "use OZ's ERC4626 implementation which includes virtual shares by default in v5"
+    ],
+    "sarif": {
+      "taxa": [
+        "defi_logic",
+        "share_price_manipulation"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "attacker is first depositor",
+      "vault lacks virtual shares or dead-shares mechanism"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "deposit 1 wei to receive 1 share (totalSupply goes from 0 to 1)",
+        "expected_state": "attacker holds 1 share; totalSupply = 1"
+      },
+      {
+        "actor": "attacker",
+        "action": "donate large amount of underlying token to vault (direct transfer, not through deposit)",
+        "expected_state": "vault totalAssets inflates; share price = large value per share"
+      },
+      {
+        "actor": "victim",
+        "action": "deposit amount < inflated share price; convertToShares rounds to 0",
+        "expected_state": "victim receives 0 shares, assets transferred to vault, controlled by attacker's share"
+      }
+    ],
+    "success_condition": "victim loses deposited assets to attacker via share-price rounding",
+    "environment_requirements": [
+      "newly deployed vault with zero totalSupply",
+      "attacker account with tokens"
+    ],
+    "budget_hint": {
+      "max_tx": 3,
+      "max_gas": 1000000
+    }
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "reentrancy.read_only_exposure",
+    "internal_name": "reference_reentrancy_read_only_exposure_v1",
+    "title": "View function reads slot mutated mid-execution by a sibling writer that issues an external call",
+    "category": "reentrancy",
+    "severity": "medium",
+    "scope": "cross_function",
+    "lifecycle_status": "example",
+    "default_status": "suspicious_behavior",
+    "confidence_policy": {
+      "base": 0.62,
+      "with_witness": 0.80,
+      "inconclusive": 0.28
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "read_only_reentrancy",
+    "attack_thesis": "A writer function issues an external call before finalizing a storage slot update (state-after-external-call pattern). A downstream protocol that reads the same slot via a view function mid-execution observes stale or intermediate state, which it uses to make economic decisions — enabling price manipulation or collateral mispricing across protocols.",
+    "protected_asset_or_effect": [
+      "cross_protocol_price_integrity",
+      "collateral_valuation"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "state_mutation",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "writer_external_call_before_settle",
+        "match": {
+          "storage_write": {
+            "semantic_role_any": [
+              "balance",
+              "price",
+              "totalSupply",
+              "reserve",
+              "share_price"
+            ],
+            "after_external_call": true
+          }
+        },
+        "bind": {
+          "slot": "$unsettled_slot",
+          "path": "$writer_path"
+        }
+      },
+      {
+        "id": "view_reader_same_slot",
+        "match": {
+          "storage_read": {
+            "same_slot_as": "$unsettled_slot",
+            "function_visibility": "view_or_pure"
+          }
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "OZ_REENTRANCY_GUARD",
+      "REENTRANCY_GUARD",
+      "reentrancy_guard",
+      "cei_pattern_guard",
+      "KNOWN_SAFE_PROXY_PATTERN"
+    ],
+    "downgrade_if_any": [
+      "single_protocol_context",
+      "no_downstream_reader_evidence"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_view_reader_context",
+      "cross_contract_integration_unknown"
+    ],
+    "manual_review_if_any": [
+      "downstream_protocol_review_needed"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "invariant_argument",
+    "acceptable_witnesses": [
+      "invariant_argument",
+      "transaction_sequence"
+    ],
+    "witness_generation": {
+      "native": "slot_reader_writer_join",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.65,
+    "min_storage_role_confidence": 0.7,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 40,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/reentrancy_readonly",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "view_reads_mid_mutation_positive",
+      "reentrancy_guard_negative",
+      "single_protocol_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Read-only reentrancy: view function exposes mid-mutation state to downstream protocols",
+    "summary": "Matches a writer function that mutates a slot via state-after-external-call paired with a view function reading the same slot, exposing stale state to downstream oracle consumers.",
+    "user_summary": "This contract updates important state (like price or balance) after making an external call, and exposes that state through a view function. A downstream protocol reading this view function during the update window will see an inconsistent, mid-transaction value — enabling price manipulation and mispriced collateral decisions.",
+    "technical_summary": "The detector joins a writer function matching the state-after-external-call pattern on a price/reserve/totalSupply slot with a view function reading the same slot. The combination creates a read-only reentrancy surface exploitable by protocols that rely on the view function for price or collateral calculations.",
+    "exploit_narrative": "An attacker calls the writer function of contract A (e.g., a liquidity pool). During the external ETH callback, the attacker calls contract B (a lending protocol) which reads A's view function to price collateral. A's state is mid-mutation — the view returns stale/manipulated data. Contract B misprices collateral, enabling undercollateralized borrowing.",
+    "exploit_preconditions": [
+      "writer function issues external call before finalizing price/balance slot",
+      "view function is called by downstream protocol during execution",
+      "downstream protocol makes value decisions based on the stale view"
+    ],
+    "remediation_hints": [
+      "add a nonReentrant modifier to the writer function to prevent callback re-entry",
+      "update all price/reserve/totalSupply slots before making external calls (CEI pattern)",
+      "downstream protocols should use time-weighted values rather than spot view reads"
+    ],
+    "sarif": {
+      "taxa": [
+        "reentrancy",
+        "price_manipulation"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "writer function with external call before state finalization",
+      "downstream protocol reads view function of this contract for pricing"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call writer function; in external call callback, call downstream protocol that reads view function",
+        "expected_state": "downstream protocol observes stale/mid-mutation price from view function"
+      },
+      {
+        "actor": "attacker",
+        "action": "exploit mispriced collateral or liquidity in downstream protocol",
+        "expected_state": "attacker extracts value from downstream protocol using stale price"
+      }
+    ],
+    "success_condition": "attacker profits from price manipulation of downstream protocol via read-only reentrancy",
+    "environment_requirements": [
+      "downstream protocol integration",
+      "attacker-deployed callback contract"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 2000000
+    }
+  }
+}

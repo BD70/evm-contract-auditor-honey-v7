@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "randomness.timestamp_or_blockhash_value_gating",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "timestamp_gating_positive",
+      "audit_json": "positive_timestamp_gating.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "randomness.timestamp_or_blockhash_value_gating"
+        ]
+      }
+    },
+    {
+      "id": "blockhash_gating_positive",
+      "audit_json": "positive_blockhash_gating.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "randomness.timestamp_or_blockhash_value_gating"
+        ]
+      }
+    },
+    {
+      "id": "chainlink_vrf_negative",
+      "audit_json": "negative_chainlink_vrf.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "randomness.timestamp_or_blockhash_value_gating"
+        ]
+      }
+    },
+    {
+      "id": "view_only_gating_inconclusive",
+      "audit_json": "inconclusive_view_only_gating.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "randomness.timestamp_or_blockhash_value_gating"
+        ]
+      }
+    }
+  ]
+}

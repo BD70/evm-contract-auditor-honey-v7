@@ -1,0 +1,169 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "reentrancy.classic_mutex_absent",
+    "internal_name": "reference_reentrancy_classic_mutex_absent_v1",
+    "title": "Contract with external calls and state mutations lacks a reentrancy guard slot",
+    "category": "reentrancy",
+    "severity": "high",
+    "scope": "contract",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.75,
+      "with_witness": 0.92,
+      "inconclusive": 0.33
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "reentrancy_missing_mutex",
+    "attack_thesis": "A contract makes external calls and mutates state but has no reentrancy guard storage slot, leaving all external-call-bearing functions vulnerable to re-entry attacks.",
+    "protected_asset_or_effect": [
+      "state_integrity",
+      "asset_custody"
+    ],
+    "exploit_model": "single_tx_repeatable"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "EXTERNAL_CALL_OBSERVED"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "REENTRANCY_GUARD",
+      "nonReentrant",
+      "mutex_lock",
+      "reentrancy_guard",
+      "OZ_REENTRANCY_GUARD",
+      "PROXY_FORWARDING_PATTERN",
+      "ERC1967_PROXY",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "proxy_safe_delegatecall"
+    ],
+    "downgrade_if_any": [
+      "STATICCALL_ONLY",
+      "no_state_mutation_after_call",
+      "AUTH_GUARDED",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "TRANSPARENT_PROXY",
+      "UUPS_PROXY",
+      "BEACON_PROXY",
+      "STRONG_AUTH_GUARD"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_guard_slot"
+    ],
+    "manual_review_if_any": [
+      "custom_reentrancy_pattern"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "transaction_sequence"
+    ],
+    "witness_generation": {
+      "native": "state_model_analysis",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.5,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 100,
+    "max_unresolved_selector_count": 30,
+    "max_unresolved_paths": 20,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/reentrancy_mutex_absent",
+    "positive_fixtures_min": 1,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "no_mutex_positive",
+      "has_mutex_negative",
+      "no_external_calls_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Contract lacks reentrancy guard despite external calls and state mutations",
+    "summary": "Matches contracts that contain external calls and state-mutating operations but have no storage slot functioning as a reentrancy mutex.",
+    "user_summary": "This contract makes external calls and changes its own state but does not implement a reentrancy guard. Without a mutex lock, any function that sends ETH or calls another contract can be re-entered before its state updates complete, potentially allowing an attacker to drain funds.",
+    "technical_summary": "The detector scans the contract-level state model for the presence of EXTERNAL_CALL_OBSERVED alongside asset_transfer effects. It then checks whether any storage slot is tagged as a reentrancy guard. Absence of such a slot indicates the contract relies on no programmatic reentrancy protection, making all functions with external calls susceptible to classic reentrancy.",
+    "exploit_narrative": "An attacker identifies a function that transfers ETH or tokens via an external call and updates balances afterward. Because there is no reentrancy mutex, the attacker's receive/fallback function re-enters the same or a different function, exploiting the pre-update state to withdraw repeatedly until the contract is drained.",
+    "exploit_preconditions": [
+      "the contract makes external calls (CALL opcode) that trigger code execution in untrusted contracts",
+      "the contract mutates state that controls asset transfers",
+      "no storage slot acts as a reentrancy guard (nonReentrant, mutex, or equivalent)"
+    ],
+    "remediation_hints": [
+      "implement a reentrancy guard using OpenZeppelin's ReentrancyGuard or equivalent mutex pattern",
+      "ensure all functions with external calls use the nonReentrant modifier",
+      "adopt the checks-effects-interactions pattern across all state-mutating functions"
+    ],
+    "sarif": {
+      "taxa": [
+        "reentrancy",
+        "access_control"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "external call emitted before state finalized",
+      "no reentrancy guard slot detected"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call victim function that issues external call before updating state",
+        "expected_state": "attacker callback re-enters victim function before state is updated"
+      },
+      {
+        "actor": "attacker",
+        "action": "callback re-enters and withdraws/mints again based on stale state",
+        "expected_state": "double-withdrawal or excess mint occurs"
+      }
+    ],
+    "success_condition": "attacker drains more value than their balance entitles them to via reentrancy",
+    "environment_requirements": [
+      "attacker-deployed malicious callback contract",
+      "victim contract with ether/token balance"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 2000000
+    }
+  }
+}

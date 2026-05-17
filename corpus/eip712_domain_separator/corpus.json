@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "auth.eip712_domain_separator_missing",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "ecrecover_no_domain_sep_positive",
+      "audit_json": "positive_no_domain_sep.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "auth.eip712_domain_separator_missing"
+        ]
+      }
+    },
+    {
+      "id": "raw_hash_positive",
+      "audit_json": "positive_raw_hash.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "auth.eip712_domain_separator_missing"
+        ]
+      }
+    },
+    {
+      "id": "eip712_typed_data_negative",
+      "audit_json": "negative_eip712_typed_data.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "auth.eip712_domain_separator_missing"
+        ]
+      }
+    },
+    {
+      "id": "unresolved_hash_path_inconclusive",
+      "audit_json": "inconclusive_unresolved_hash.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "auth.eip712_domain_separator_missing"
+        ]
+      }
+    }
+  ]
+}

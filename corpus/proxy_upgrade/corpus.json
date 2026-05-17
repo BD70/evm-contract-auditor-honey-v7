@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "proxy.unprotected_implementation_upgrade",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "public_upgrade_positive",
+      "audit_json": "positive_public.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "proxy.unprotected_implementation_upgrade"
+        ]
+      }
+    },
+    {
+      "id": "caller_upgrade_positive",
+      "audit_json": "positive_caller.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "proxy.unprotected_implementation_upgrade"
+        ]
+      }
+    },
+    {
+      "id": "admin_guard_negative",
+      "audit_json": "negative_admin.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "proxy.unprotected_implementation_upgrade"
+        ]
+      }
+    },
+    {
+      "id": "governance_guard_negative",
+      "audit_json": "negative_governance.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "proxy.unprotected_implementation_upgrade"
+        ]
+      }
+    },
+    {
+      "id": "partial_layout_inconclusive",
+      "audit_json": "inconclusive_layout.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "proxy.unprotected_implementation_upgrade"
+        ]
+      }
+    }
+  ]
+}

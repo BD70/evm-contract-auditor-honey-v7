@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "overflow.unchecked_arithmetic",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "pre_080_unchecked_positive",
+      "audit_json": "positive_pre_080.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "overflow.unchecked_arithmetic"
+        ]
+      }
+    },
+    {
+      "id": "solidity_080_plus_negative",
+      "audit_json": "negative_080_plus.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "overflow.unchecked_arithmetic"
+        ]
+      }
+    },
+    {
+      "id": "safemath_usage_negative",
+      "audit_json": "negative_safemath.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "overflow.unchecked_arithmetic"
+        ]
+      }
+    },
+    {
+      "id": "low_coverage_inconclusive",
+      "audit_json": "inconclusive_low_coverage.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "overflow.unchecked_arithmetic"
+        ]
+      }
+    }
+  ]
+}

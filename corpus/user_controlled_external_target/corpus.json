@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "call.user_controlled_external_target",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "calldata_target_positive",
+      "audit_json": "positive_calldata_target.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.user_controlled_external_target"
+        ]
+      }
+    },
+    {
+      "id": "delegate_calldata_positive",
+      "audit_json": "positive_delegate_calldata.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.user_controlled_external_target"
+        ]
+      }
+    },
+    {
+      "id": "allowlist_guard_negative",
+      "audit_json": "negative_allowlist_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "call.user_controlled_external_target"
+        ]
+      }
+    },
+    {
+      "id": "unresolved_target_inconclusive",
+      "audit_json": "inconclusive_unresolved_target.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "call.user_controlled_external_target"
+        ]
+      }
+    }
+  ]
+}

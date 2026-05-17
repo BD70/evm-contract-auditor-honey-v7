@@ -1,0 +1,180 @@
+{
+  "name": "yieldcore_rwa_vault",
+  "description": "YieldCore RWAVault — ERC4626 fixed-term vault with monthly interest. Exploited 2026-04-28 due to missing caller authorization in withdraw/redeem overrides.",
+  "selectors": [
+    {"selector": "0x01e1d114", "signature": "totalAssets()"},
+    {"selector": "0x402d267d", "signature": "maxDeposit(address)"},
+    {"selector": "0xc63d75b6", "signature": "maxMint(address)"},
+    {"selector": "0xce96cb77", "signature": "maxWithdraw(address)"},
+    {"selector": "0xd905777e", "signature": "maxRedeem(address)"},
+    {"selector": "0x6e553f65", "signature": "deposit(uint256,address)"},
+    {"selector": "0x94bf804d", "signature": "mint(uint256,address)"},
+    {"selector": "0xb460af94", "signature": "withdraw(uint256,address,address)"},
+    {"selector": "0xba087652", "signature": "redeem(uint256,address,address)"},
+    {"selector": "0x06fdde03", "signature": "name()"},
+    {"selector": "0x95d89b41", "signature": "symbol()"},
+    {"selector": "0x313ce567", "signature": "decimals()"},
+    {"selector": "0x18160ddd", "signature": "totalSupply()"},
+    {"selector": "0x70a08231", "signature": "balanceOf(address)"},
+    {"selector": "0xa9059cbb", "signature": "transfer(address,uint256)"},
+    {"selector": "0x23b872dd", "signature": "transferFrom(address,address,uint256)"},
+    {"selector": "0x095ea7b3", "signature": "approve(address,uint256)"},
+    {"selector": "0xdd62ed3e", "signature": "allowance(address,address)"},
+    {"selector": "0x38d52e0f", "signature": "asset()"},
+    {"selector": "0xc6e6f592", "signature": "convertToShares(uint256)"},
+    {"selector": "0x07a2d13a", "signature": "convertToAssets(uint256)"},
+    {"selector": "0xef8b30f7", "signature": "previewDeposit(uint256)"},
+    {"selector": "0xb3d7f6b9", "signature": "previewMint(uint256)"},
+    {"selector": "0x0a28a477", "signature": "previewWithdraw(uint256)"},
+    {"selector": "0x4cdad506", "signature": "previewRedeem(uint256)"},
+    {"selector": "0x4524e859", "signature": "initialize(string,string,uint256,uint256,uint256,uint256,uint256,uint256,uint256,address,address)"},
+    {"selector": "0x055ad42e", "signature": "currentPhase()"},
+    {"selector": "0xc50411ec", "signature": "collectionStartTime()"},
+    {"selector": "0xa2473d77", "signature": "collectionEndTime()"},
+    {"selector": "0x75cc703a", "signature": "interestStartTime()"},
+    {"selector": "0xd83d3241", "signature": "termDuration()"},
+    {"selector": "0x48c9eaaf", "signature": "fixedAPY()"},
+    {"selector": "0x41b3d185", "signature": "minDeposit()"},
+    {"selector": "0x59b6a0c9", "signature": "maxCapacity()"},
+    {"selector": "0x0cfb14b0", "signature": "totalDeployed()"},
+    {"selector": "0x8c0243e7", "signature": "totalInterestPaid()"},
+    {"selector": "0xdc4c90d3", "signature": "poolManager()"},
+    {"selector": "0x02fb0c5e", "signature": "active()"},
+    {"selector": "0x4b1533b2", "signature": "totalPrincipal()"},
+    {"selector": "0xb62b2656", "signature": "withdrawalStartTime()"},
+    {"selector": "0xa454aaa6", "signature": "defaultTime()"},
+    {"selector": "0x35981fd8", "signature": "claimInterest()"},
+    {"selector": "0x46157bff", "signature": "claimSingleMonth()"},
+    {"selector": "0xed5a776e", "signature": "getClaimableMonths(address)"},
+    {"selector": "0x151d9b74", "signature": "getPendingInterest(address)"},
+    {"selector": "0x5287ce12", "signature": "getDepositInfo(address)"},
+    {"selector": "0xf3833bbc", "signature": "getNetRedemptionValue(address)"},
+    {"selector": "0xb7febb87", "signature": "getUserClaimedInterest(address)"},
+    {"selector": "0x48b160fa", "signature": "getShareInfo(address)"},
+    {"selector": "0x4e8bfdaa", "signature": "maturityTime()"},
+    {"selector": "0x91d14854", "signature": "hasRole(bytes32,address)"},
+    {"selector": "0x248a9ca3", "signature": "getRoleAdmin(bytes32)"},
+    {"selector": "0x2f2ff15d", "signature": "grantRole(bytes32,address)"},
+    {"selector": "0xd547741f", "signature": "revokeRole(bytes32,address)"},
+    {"selector": "0x36568abe", "signature": "renounceRole(bytes32,address)"},
+    {"selector": "0x5c975abb", "signature": "paused()"},
+    {"selector": "0x51fb012d", "signature": "whitelistEnabled()"}
+  ],
+  "patterns": [
+    {
+      "name": "YieldCore:RWAVault",
+      "required_selectors": [
+        "deposit(uint256,address)",
+        "withdraw(uint256,address,address)",
+        "redeem(uint256,address,address)",
+        "totalAssets()",
+        "asset()",
+        "claimInterest()",
+        "currentPhase()",
+        "initialize(string,string,uint256,uint256,uint256,uint256,uint256,uint256,uint256,address,address)"
+      ],
+      "optional_selectors": [
+        "claimSingleMonth()",
+        "getDepositInfo(address)",
+        "getShareInfo(address)",
+        "maturityTime()",
+        "poolManager()",
+        "withdrawalStartTime()"
+      ],
+      "roles": ["erc4626_vault", "rwa_vault", "fixed_term_vault", "interest_bearing"],
+      "confidence": 0.95
+    }
+  ],
+  "expected_permissionless": [
+    "deposit(uint256,address)",
+    "withdraw(uint256,address,address)",
+    "redeem(uint256,address,address)",
+    "claimInterest()",
+    "claimSingleMonth()",
+    "transfer(address,uint256)",
+    "transferFrom(address,address,uint256)",
+    "approve(address,uint256)"
+  ],
+  "storage_anchors": [
+    {
+      "requires_selectors": [
+        "deposit(uint256,address)",
+        "withdraw(uint256,address,address)",
+        "currentPhase()",
+        "claimInterest()"
+      ],
+      "slots": [
+        {"slot": 0, "name": "currentPhase", "kind": "value", "value_type": "uint8", "confidence": 0.90},
+        {"slot": 1, "name": "collectionStartTime", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 2, "name": "collectionEndTime", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 3, "name": "interestStartTime", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 4, "name": "termDuration", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 5, "name": "fixedAPY", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 6, "name": "minDeposit", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 7, "name": "maxCapacity", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 8, "name": "totalDeployed", "kind": "value", "value_type": "uint256", "confidence": 0.85},
+        {"slot": 9, "name": "totalInterestPaid", "kind": "value", "value_type": "uint256", "confidence": 0.85},
+        {"slot": 10, "name": "poolManager", "kind": "value", "value_type": "address", "confidence": 0.90},
+        {"slot": 11, "name": "active", "kind": "value", "value_type": "bool", "confidence": 0.85},
+        {"slot": 12, "name": "_depositInfos", "kind": "mapping", "value_type": "struct", "key_types": ["address"], "confidence": 0.90},
+        {"slot": 13, "name": "totalPrincipal", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 14, "name": "withdrawalStartTime", "kind": "value", "value_type": "uint256", "confidence": 0.90},
+        {"slot": 15, "name": "_userClaimedInterest", "kind": "mapping", "value_type": "uint256", "key_types": ["address"], "confidence": 0.85}
+      ]
+    }
+  ],
+  "function_overrides": {
+    "initialize(string,string,uint256,uint256,uint256,uint256,uint256,uint256,uint256,address,address)": {
+      "mutability": "nonpayable",
+      "state_writes": ["currentPhase <- Collecting", "collectionStartTime", "collectionEndTime", "interestStartTime", "termDuration", "fixedAPY", "minDeposit", "maxCapacity", "poolManager", "active <- true", "_initialized <- true"],
+      "guards": ["not_already_initialized"],
+      "branches": ["clone-pattern initializer with _initialized guard"]
+    },
+    "deposit(uint256,address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["currentPhase", "collectionStartTime", "collectionEndTime", "maxCapacity", "totalPrincipal", "_depositInfos[receiver]", "_allocatedCap[receiver]", "whitelistEnabled", "_whitelist[receiver]"],
+      "state_writes": ["_depositInfos[receiver].shares", "_depositInfos[receiver].principal", "totalPrincipal"],
+      "guards": ["nonReentrant", "whenNotPaused", "onlyActive", "onlyPhase(Collecting)", "capacity_check", "whitelist_check"],
+      "external_calls": ["asset().transferFrom(msg.sender, address(this), assets)"],
+      "events": ["Deposit"]
+    },
+    "withdraw(uint256,address,address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["currentPhase", "withdrawalStartTime", "_depositInfos[owner]", "_userClaimedInterest[owner]", "totalPrincipal"],
+      "state_writes": ["_depositInfos[owner].principal", "_depositInfos[owner].shares", "totalPrincipal", "_userClaimedInterest[owner]", "totalClaimedInterest"],
+      "guards": ["nonReentrant", "whenNotPaused", "phase_matured_or_defaulted", "withdrawal_time_check"],
+      "external_calls": ["_burn(owner, shares)", "asset().safeTransfer(receiver, assets)", "_claimRemainingInterest(owner)"],
+      "events": ["Withdraw"],
+      "branches": ["VULNERABILITY: No require(msg.sender == owner) and no _spendAllowance check. Any caller can specify arbitrary owner and receiver."]
+    },
+    "redeem(uint256,address,address)": {
+      "mutability": "nonpayable",
+      "state_reads": ["currentPhase", "withdrawalStartTime", "_depositInfos[owner]", "_userClaimedInterest[owner]", "totalPrincipal"],
+      "state_writes": ["_depositInfos[owner].principal", "_depositInfos[owner].shares", "totalPrincipal", "_userClaimedInterest[owner]", "totalClaimedInterest"],
+      "guards": ["nonReentrant", "whenNotPaused", "phase_matured_or_defaulted", "withdrawal_time_check"],
+      "external_calls": ["_burn(owner, shares)", "asset().safeTransfer(receiver, assets)", "_claimRemainingInterest(owner)"],
+      "events": ["Withdraw"],
+      "branches": ["VULNERABILITY: Same as withdraw — no caller authorization check before burning owner's shares"]
+    },
+    "claimInterest()": {
+      "mutability": "nonpayable",
+      "state_reads": ["currentPhase", "_depositInfos[msg.sender]", "interestPaymentDates", "fixedAPY"],
+      "state_writes": ["_depositInfos[msg.sender].lastClaimMonth", "_userClaimedInterest[msg.sender]", "totalClaimedInterest", "totalInterestPaid"],
+      "guards": ["nonReentrant", "whenNotPaused", "not_collecting_phase", "has_shares", "has_claimable"],
+      "external_calls": ["asset().safeTransfer(msg.sender, interestAmount)"],
+      "events": ["InterestClaimed"]
+    }
+  },
+  "known_vulnerabilities": [
+    {
+      "id": "CVE-2026-RWA-001",
+      "category": "access_control",
+      "severity": "critical",
+      "functions": ["withdraw(uint256,address,address)", "redeem(uint256,address,address)"],
+      "description": "ERC4626 withdraw/redeem overrides remove _spendAllowance authorization. Any caller can drain any depositor.",
+      "exploit_tx": "0x6b04344d5627df59d3bc645e7454f4605a90272852a91e435e370376643353b3",
+      "exploit_date": "2026-04-28",
+      "loss_usd": 392764
+    }
+  ]
+}

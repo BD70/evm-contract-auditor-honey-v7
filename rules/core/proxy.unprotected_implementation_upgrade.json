@@ -1,0 +1,177 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "proxy.unprotected_implementation_upgrade",
+    "internal_name": "reference_proxy_unprotected_implementation_upgrade_v1",
+    "title": "Implementation slot can be updated without a strong upgrade guard",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "contract",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.81,
+      "with_witness": 0.97,
+      "inconclusive": 0.42
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unprotected_proxy_upgrade",
+    "attack_thesis": "A storage slot recognized as an implementation slot can be written from an externally reachable path without a strong upgrade guard, enabling replacement of the future delegate target.",
+    "protected_asset_or_effect": [
+      "code_execution_authority",
+      "proxy_integrity"
+    ],
+    "exploit_model": "single_or_multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [
+      "ERC-1967"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "upgrade_implementation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "storage_write": {
+      "semantic_role_any": [
+        "implementation"
+      ],
+      "proxy_slot_kind": "implementation",
+      "user_controlled_write_value": true,
+      "caller_reachability": "external_untrusted",
+      "caller_constraint": "missing_or_weak",
+      "write_origin_any": [
+        "calldata",
+        "caller"
+      ],
+      "min_role_confidence": 0.9
+    }
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "admin_guard",
+      "upgrade_authorization_guard",
+      "timelock_or_governance_guard",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD",
+      "TWO_STEP_UPGRADE",
+      "two_step_acceptance_by_new_admin",
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER"
+    ],
+    "downgrade_if_any": [
+      "manual_upgrade_review",
+      "COMPOUND_UNITROLLER",
+      "GNOSIS_SAFE_PROXY",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "OZ_OWNABLE"
+    ],
+    "inconclusive_if_any": [
+      "partial_proxy_layout",
+      "DIAMOND_PROXY"
+    ],
+    "manual_review_if_any": [
+      "custom_proxy_pattern",
+      "SLOT0_PROXY"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "slot_write_plus_upgrade_effect",
+      "optional_adapters": [
+        "mythril",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.92,
+    "min_storage_role_confidence": 0.9,
+    "min_path_reachability_confidence": 0.85,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 10,
+    "max_unresolved_paths": 5,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/proxy_upgrade",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "erc1967_public_upgrade_positive",
+      "adminless_upgrade_positive",
+      "admin_guard_negative",
+      "governance_guard_negative",
+      "partial_proxy_layout_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Implementation slot update is reachable without a strong upgrade guard",
+    "summary": "Matches implementation-slot writes that are externally reachable without a strong admin, governance, or timelock guard.",
+    "user_summary": "The proxy may allow an attacker to change its implementation address without proper upgrade authorization. If that happens, the attacker can replace the contract logic the proxy will run.",
+    "technical_summary": "The detector matches externally reachable writes into a slot recognized as an ERC-1967 implementation slot when the write is user-controlled and not protected by a strong admin, governance, or timelock guard. That exposes the future delegate target to attacker influence.",
+    "exploit_narrative": "The attacker calls an upgrade path that writes the proxy's implementation pointer without strong authorization. Once the implementation slot is replaced, subsequent proxy calls delegate into attacker-chosen code and the proxy's execution authority is lost.",
+    "exploit_preconditions": [
+      "implementation slot controls future delegate target",
+      "attacker can choose or influence the replacement implementation"
+    ],
+    "remediation_hints": [
+      "guard upgrade entrypoints with explicit admin or governance authorization",
+      "use timelock or multisig review for upgrade execution",
+      "emit upgrade events and enforce implementation allowlists where appropriate"
+    ],
+    "sarif": {
+      "taxa": [
+        "proxy",
+        "upgradeability"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "upgrade function is externally reachable",
+      "no strong upgrade guard"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call upgrade function passing attacker-controlled implementation address",
+        "expected_state": "EIP-1967 implementation slot updated to malicious contract address"
+      }
+    ],
+    "success_condition": "implementation slot contains attacker-controlled address; all future calls delegate to malicious contract",
+    "environment_requirements": [
+      "deployed proxy contract"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

@@ -1,0 +1,6 @@
+pydantic>=2.0
+networkx>=3.0
+z3-solver>=4.12
+pyyaml>=6.0
+cbor2>=5.6
+openai>=1.40

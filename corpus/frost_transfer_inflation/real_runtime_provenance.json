@@ -1,0 +1,11 @@
+{
+  "address": "0x9269C72D844AF5B3946cE864b5d5266dBd2D62c7",
+  "chain": "ethereum",
+  "artifact": "test/FROST/deployed_code.hex",
+  "behavior_fixture": "corpus/frost_transfer_inflation/real_frost_runtime.audit.json",
+  "profile": "contract_profiles/frost_fixture.json",
+  "retrieval": {
+    "method": "eth_getCode",
+    "rpc": "https://1rpc.io/eth"
+  }
+}

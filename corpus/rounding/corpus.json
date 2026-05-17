@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "defi.rounding.assumed_actual_balance_mismatch",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "rounded_balance_positive",
+      "audit_json": "positive_balancer_like.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.rounding.assumed_actual_balance_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "repeatable_rounding_positive",
+      "audit_json": "positive_repeatable.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "defi.rounding.assumed_actual_balance_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "directional_rounding_negative",
+      "audit_json": "negative_directional.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "defi.rounding.assumed_actual_balance_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "minimum_liquidity_negative",
+      "audit_json": "negative_liquidity.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "defi.rounding.assumed_actual_balance_mismatch"
+        ]
+      }
+    },
+    {
+      "id": "missing_settlement_alignment_inconclusive",
+      "audit_json": "inconclusive_settlement.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "defi.rounding.assumed_actual_balance_mismatch"
+        ]
+      }
+    }
+  ]
+}

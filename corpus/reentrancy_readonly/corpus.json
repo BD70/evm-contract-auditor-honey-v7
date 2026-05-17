@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "reentrancy.read_only_exposure",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "view_reads_mid_mutation_positive",
+      "audit_json": "positive_view_mid_mutation.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "reentrancy.read_only_exposure"
+        ]
+      }
+    },
+    {
+      "id": "reserve_slot_exposed_positive",
+      "audit_json": "positive_reserve_slot_exposed.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "reentrancy.read_only_exposure"
+        ]
+      }
+    },
+    {
+      "id": "reentrancy_guard_negative",
+      "audit_json": "negative_reentrancy_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "reentrancy.read_only_exposure"
+        ]
+      }
+    },
+    {
+      "id": "single_protocol_inconclusive",
+      "audit_json": "inconclusive_single_protocol.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "reentrancy.read_only_exposure"
+        ]
+      }
+    }
+  ]
+}

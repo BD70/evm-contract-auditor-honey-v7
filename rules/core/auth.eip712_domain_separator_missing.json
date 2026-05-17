@@ -1,0 +1,175 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "auth.eip712_domain_separator_missing",
+    "internal_name": "reference_auth_eip712_domain_separator_missing_v1",
+    "title": "ecrecover hash input not derived from EIP-712 domain separator (0x1901 prefix + stored slot)",
+    "category": "auth",
+    "severity": "medium",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "suspicious_behavior",
+    "confidence_policy": {
+      "base": 0.62,
+      "with_witness": 0.78,
+      "inconclusive": 0.28
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "signature_malleability",
+    "attack_thesis": "The contract calls ecrecover (precompile 0x01) on a state-changing path but constructs the digest without the EIP-712 prefix bytes (0x1901) and a stored, chain-specific domain separator. Without the domain separator, signatures are valid across any chain and any contract sharing the same message encoding, enabling cross-chain and cross-contract signature replay attacks.",
+    "protected_asset_or_effect": [
+      "signature_domain_binding",
+      "auth_integrity"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "ECRECOVER_ON_STATE_CHANGING_PATH"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "state_mutation",
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "ecrecover_no_eip712_prefix",
+        "match": {
+          "call": {
+            "target": "precompile_0x01",
+            "hash_input_missing_prefix": "0x1901",
+            "hash_input_missing_domain_separator_slot": true
+          },
+          "reachable_effect_any": [
+            "state_mutation",
+            "asset_transfer",
+            "accounting_mutation"
+          ]
+        },
+        "bind": {
+          "path": "$ecrecover_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "eip712_domain_separator_guard",
+      "eip712_typed_hash_guard",
+      "eip712_prefix_0x1901_present",
+      "DOMAIN_SEPARATOR_SLOT_READ"
+    ],
+    "downgrade_if_any": [
+      "personal_sign_prefix_guard",
+      "single_chain_deployment_evidence"
+    ],
+    "inconclusive_if_any": [
+      "unresolved_hash_construction_path",
+      "hash_preimage_from_external_call"
+    ],
+    "manual_review_if_any": [
+      "custom_domain_binding_scheme"
+    ]
+  },
+  "proof": {
+    "min_level": "P2",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "ecrecover_hash_preimage_trace",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.65,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 25,
+    "max_unresolved_paths": 15,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/eip712_domain_separator",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "ecrecover_no_domain_sep_positive",
+      "eip712_typed_data_negative",
+      "unresolved_hash_path_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "ecrecover called without EIP-712 domain separator binding",
+    "summary": "Matches ecrecover calls on state-changing paths where the hash input is not constructed using the 0x1901 prefix and a stored domain separator slot, enabling cross-chain and cross-contract signature replay.",
+    "user_summary": "This contract uses ecrecover to verify signatures but does not bind the signed message to this specific contract and chain via EIP-712's domain separator. An attacker can take a valid signature generated for one context and replay it on a different chain or a different contract that shares the same message encoding \u2014 bypassing authentication.",
+    "technical_summary": "The detector identifies calls to the ecrecover precompile (address 0x01) on state-changing execution paths where the hash argument is not a keccak256 of data prefixed with the 0x1901 byte sequence (EIP-712 hashStruct prefix) and a storage-derived DOMAIN_SEPARATOR slot. Without this binding, the digest is context-free and replayable.",
+    "exploit_narrative": "A user signs a message to authorize an action on chain A. An attacker extracts the (v, r, s) signature. Because the hash input has no domain separator, the same bytes produce the same digest on chain B. The attacker submits the replay transaction on chain B (or against a different contract), and ecrecover returns the same signer address \u2014 granting unauthorized access.",
+    "exploit_preconditions": [
+      "ecrecover is called on a state-changing function",
+      "the hash input is not derived from EIP-712 typed data with a domain separator",
+      "attacker has access to a previously signed message from a different context"
+    ],
+    "remediation_hints": [
+      "construct the digest per EIP-712: keccak256(abi.encodePacked(0x1901, DOMAIN_SEPARATOR, hashStruct(message)))",
+      "store and compute DOMAIN_SEPARATOR using chainId, verifyingContract, and name/version",
+      "use OpenZeppelin's EIP712 base contract or the ERC20Permit extension which implements this correctly"
+    ],
+    "sarif": {
+      "taxa": [
+        "auth",
+        "signature_replay"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "ecrecover hash input lacks EIP-712 domain separator",
+      "attacker has a valid (v, r, s) signature from any prior context"
+    ],
+    "steps": [
+      {
+        "actor": "victim",
+        "action": "sign and submit a message on chain A or contract A; attacker observes the signature on-chain or via mempool",
+        "expected_state": "valid (v, r, s) tuple is known to the attacker"
+      },
+      {
+        "actor": "attacker",
+        "action": "submit the same (v, r, s) tuple to the target contract on chain B (or to a different contract with the same encoding); ecrecover returns the victim's address",
+        "expected_state": "authorization check passes; attacker executes action as the victim"
+      }
+    ],
+    "success_condition": "attacker impersonates the original signer on a different chain or contract due to missing domain separator",
+    "environment_requirements": [
+      "multi-chain deployment or second contract with same message encoding",
+      "previously captured signature"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 500000
+    }
+  }
+}

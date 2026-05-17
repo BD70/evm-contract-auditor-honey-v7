@@ -1,0 +1,104 @@
+{
+  "analysis": {
+    "finding_count": 0,
+    "highest_confidence": 0.0,
+    "highest_severity": null,
+    "matched": false,
+    "raw_match_count": 0
+  },
+  "analysis_context": {
+    "analysis_id": "b1ce4878-25ca-436a-99f3-965398fb45a4",
+    "created_at": "2026-05-10T10:35:47.922350Z",
+    "input_kind": "hex_file",
+    "profiles_enabled": true,
+    "resolver_enabled": true
+  },
+  "artifacts": {
+    "behavior_schema": "evm-audit.behavior.v2",
+    "state_model_schema": "evm-audit.state_model.v2"
+  },
+  "bytecode_identity": {
+    "keccak256": "0xcdcb11ce873bcab54aac6d16d75e7025e510b919dbc90972ab826a75ea840b4e",
+    "metadata_stripped_keccak256": "0xcdcb11ce873bcab54aac6d16d75e7025e510b919dbc90972ab826a75ea840b4e",
+    "original_keccak256": "0x4c695ad00dc48fa687830fefe8b6f517fa855421d96613ac88cf64f75a3f26fa",
+    "runtime_keccak256": "0x4c695ad00dc48fa687830fefe8b6f517fa855421d96613ac88cf64f75a3f26fa"
+  },
+  "chain_context": {},
+  "coverage": {
+    "action_count": 101,
+    "bytecode_instruction_coverage": 1.0,
+    "external_call_resolution_confidence": 1.0,
+    "function_count": 14,
+    "function_coverage": 1.0,
+    "function_slicing_confidence": 0.95,
+    "functions_with_actions": 14,
+    "has_unmodeled_terminators": false,
+    "path_reachability_confidence": 0.75,
+    "storage_role_confidence": 0.5,
+    "unknown_action_expression_count": 5,
+    "unknown_jump_targets": 0,
+    "unmodeled_opcodes": [],
+    "unresolved_path_count": 0,
+    "unresolved_selector_count": 8
+  },
+  "diagnostics": {
+    "analysis_warnings": [
+      "8 selectors unresolved; behavior facts remain authoritative.",
+      "21 actions contain unknown symbolic components."
+    ],
+    "checker_trace_count": 247,
+    "deconstruction": {
+      "analysis": {
+        "deep_analysis_enabled": true,
+        "eof_format": false,
+        "metadata_stripped": true,
+        "pipeline_truncated": false,
+        "pipeline_warnings": [],
+        "proxy_shell": false
+      },
+      "profiles": {
+        "enabled": true,
+        "loaded_directories": [
+          "/Users/honeysingh/Projects/misc/evm-contract-auditor 2/profiles",
+          "/Users/honeysingh/Projects/misc/evm-contract-auditor 2/contract_profiles",
+          "contract_profiles"
+        ],
+        "pack_count": 5
+      },
+      "resolver": {
+        "enabled": true,
+        "errors": [
+          "API error for 0xca70fc41: remote selector request failed: HTTP Error 403: Forbidden",
+          "API error for 0xcff6cdc2: remote selector request failed: HTTP Error 403: Forbidden",
+          "API error for 0xf8db0f68: remote selector request failed: HTTP Error 403: Forbidden",
+          "API error for 0xca15c873: remote selector request failed: HTTP Error 403: Forbidden",
+          "Remote selector resolution skipped for 0x6fe09fbf: error budget exhausted",
+          "Remote selector resolution skipped for 0x75b238fc: error budget exhausted",
+          "Remote selector resolution skipped for 0x8b3f9318: error budget exhausted",
+          "Remote selector resolution skipped for 0x9010d07c: error budget exhausted"
+        ],
+        "resolved_count": 6,
+        "unresolved_count": 8
+      }
+    }
+  },
+  "exposure_estimate": {
+    "bytecode_selector_hints": [],
+    "token_operations": [],
+    "type": "none",
+    "uses_approve": false,
+    "uses_transfer_from": false
+  },
+  "findings": [],
+  "input": {
+    "kind": "hex_file",
+    "value": "/Users/honeysingh/Projects/misc/evm-contract-auditor 2/test/FROST/deployed_code.hex"
+  },
+  "ok": true,
+  "schema": "evm-audit.api.v2",
+  "schema_version": "2.0.0",
+  "warnings": [
+    "8 selectors unresolved; behavior facts remain authoritative.",
+    "21 actions contain unknown symbolic components."
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "token.unsafe_erc20_assumption",
+    "internal_name": "reference_token_unsafe_erc20_assumption_v1",
+    "title": "ERC20 transfer/transferFrom called without return value check and without SafeERC20 wrapper",
+    "category": "token_security",
+    "severity": "medium",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "suspicious_behavior",
+    "confidence_policy": {
+      "base": 0.65,
+      "with_witness": 0.82,
+      "inconclusive": 0.3
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unsafe_erc20_transfer",
+    "attack_thesis": "The contract calls ERC20 transfer() or transferFrom() without checking the return value and without using SafeERC20. Non-standard tokens (USDT, BNB, some ERC20 variants) either return false on failure or return no value at all. A raw call that ignores the return value will silently succeed even if the transfer failed.",
+    "protected_asset_or_effect": [
+      "token_transfer_integrity",
+      "accounting_mutation"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "bare_erc20_call_no_returncheck",
+        "match": {
+          "call": {
+            "selector_any": [
+              "0xa9059cbb",
+              "0x23b872dd"
+            ],
+            "target_origin": "storage",
+            "missing_return_value_check": true
+          }
+        },
+        "bind": {
+          "path": "$transfer_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "SAFE_ERC20_USAGE",
+      "safeTransfer",
+      "OZ_REENTRANCY_GUARD",
+      "verified_return_check_cross_block",
+      "assembly_return_value_handling",
+      "try_catch_pattern"
+    ],
+    "downgrade_if_any": [
+      "known_compliant_token_only",
+      "low_value_transfer"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_return_value_usage"
+    ],
+    "manual_review_if_any": [
+      "token_is_internal_controlled"
+    ]
+  },
+  "proof": {
+    "min_level": "P2",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "call_return_value_trace",
+      "optional_adapters": [
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.65,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 25,
+    "max_unresolved_paths": 15,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/unsafe_erc20",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "bare_transfer_no_check_positive",
+      "safeTransfer_wrapper_negative",
+      "ambiguous_return_value_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Bare ERC20 transfer/transferFrom without return value check",
+    "summary": "Matches ERC20 transfer/transferFrom calls on dynamic token addresses that do not check the return value and lack a SafeERC20 wrapper.",
+    "user_summary": "This contract interacts with ERC20 tokens using bare transfer() or transferFrom() without checking whether the call succeeded. Tokens like USDT return false on failure rather than reverting. If the transfer fails silently, the contract will proceed as if it succeeded, corrupting accounting or enabling theft.",
+    "technical_summary": "The detector identifies calls to ERC20 selectors (transfer: 0xa9059cbb, transferFrom: 0x23b872dd) on dynamic (storage-derived) token addresses where RETURNDATASIZE is not checked after the call and no SafeERC20 wrapper pattern (RETURNDATASIZE == 0 OR abi-decoded true) is present. This allows non-reverting ERC20 failures to pass silently.",
+    "exploit_narrative": "An attacker interacts with the contract using a non-standard token that returns false on transfer failure. The contract ignores the return value and updates its accounting as if the transfer succeeded. The attacker can drain credited balances without actually depositing tokens.",
+    "exploit_preconditions": [
+      "contract accepts non-standard ERC20 tokens",
+      "transfer return value is not validated",
+      "no SafeERC20 wrapper is used"
+    ],
+    "remediation_hints": [
+      "use OpenZeppelin SafeERC20 safeTransfer/safeTransferFrom wrappers for all ERC20 interactions",
+      "if not using SafeERC20, manually check the return value: require(token.transfer(to, amount), 'Transfer failed')",
+      "consider restricting to ERC20-compliant tokens only and documenting the assumption"
+    ],
+    "sarif": {
+      "taxa": [
+        "token_security",
+        "unchecked_external_call"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "non-standard ERC20 token returns false instead of reverting on failure",
+      "contract does not check transfer return value"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "interact with contract using fee-on-transfer or USDT-style token that returns false",
+        "expected_state": "transfer fails silently; contract credits attacker with full amount despite actual transfer failure"
+      }
+    ],
+    "success_condition": "attacker receives credit for tokens never actually transferred",
+    "environment_requirements": [
+      "non-standard ERC20 token deployment",
+      "deployed victim contract"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 500000
+    }
+  }
+}

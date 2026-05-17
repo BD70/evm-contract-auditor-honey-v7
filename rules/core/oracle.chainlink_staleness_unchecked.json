@@ -1,0 +1,167 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "oracle.chainlink_staleness_unchecked",
+    "internal_name": "reference_oracle_chainlink_staleness_unchecked_v1",
+    "title": "Chainlink latestRoundData() called without staleness check on updatedAt return value",
+    "category": "oracle_security",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.74,
+      "with_witness": 0.9,
+      "inconclusive": 0.36
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "oracle_staleness",
+    "attack_thesis": "The contract calls Chainlink latestRoundData() but does not compare the updatedAt timestamp to block.timestamp. Stale prices can be used when a Chainlink oracle has not updated for an extended period, causing incorrect pricing in DeFi operations.",
+    "protected_asset_or_effect": [
+      "price_feed_integrity",
+      "asset_valuation",
+      "accounting_mutation"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "CHAINLINK_PRICE_FEED_CALL"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation",
+      "mint",
+      "burn"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "latestRoundData_call",
+        "match": {
+          "call": {
+            "selector": "0xfeaf968c",
+            "missing_return_validation": "updatedAt_vs_timestamp"
+          }
+        },
+        "bind": {
+          "path": "$oracle_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "staleness_check_guard",
+      "updatedAt_timestamp_comparison",
+      "heartbeat_validation_guard"
+    ],
+    "downgrade_if_any": [
+      "partial_staleness_check",
+      "off_chain_freshness_validation"
+    ],
+    "inconclusive_if_any": [
+      "unresolved_oracle_return_path",
+      "ambiguous_timestamp_usage"
+    ],
+    "manual_review_if_any": [
+      "custom_oracle_wrapper"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "oracle_return_dataflow_trace",
+      "optional_adapters": [
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 40,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/chainlink_staleness",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "no_staleness_check_positive",
+      "updatedAt_checked_negative",
+      "aggregator_custom_logic_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Chainlink oracle price used without staleness validation",
+    "summary": "Matches Chainlink latestRoundData() calls where the updatedAt return value is not compared to block.timestamp with a heartbeat threshold.",
+    "user_summary": "This contract reads a Chainlink price feed but does not verify that the price is fresh. If the oracle has not updated recently (e.g., during a network outage or circuit-breaker event), the contract will continue operating on a stale price, potentially allowing mispriced trades, bad liquidations, or collateral valuation errors.",
+    "technical_summary": "The detector identifies calls to the Chainlink AggregatorV3 latestRoundData() selector (0xfeaf968c) where the third return value (updatedAt, a uint256 timestamp) is not consumed in a comparison with block.timestamp (TIMESTAMP opcode) using LT/GT/SUB within a reasonable window. This means the protocol accepts arbitrarily old prices.",
+    "exploit_narrative": "During a Chainlink oracle pause or sequencer downtime, prices become stale. An attacker borrows against stale high-price collateral, or liquidates positions using stale low prices, extracting value from the protocol while honest users cannot react.",
+    "exploit_preconditions": [
+      "Chainlink oracle has not updated within the heartbeat window",
+      "contract does not check updatedAt against block.timestamp"
+    ],
+    "remediation_hints": [
+      "add require(block.timestamp - updatedAt <= HEARTBEAT_PERIOD, 'Stale price') after each latestRoundData() call",
+      "check answeredInRound >= roundId to detect incomplete rounds",
+      "use a circuit breaker that pauses the protocol when the oracle is stale"
+    ],
+    "sarif": {
+      "taxa": [
+        "oracle_security",
+        "input_validation"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "Chainlink oracle has not updated for longer than heartbeat period",
+      "contract does not check updatedAt"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "wait for or induce Chainlink oracle staleness, then call pricing-dependent function",
+        "expected_state": "contract uses stale price in financial calculation producing favorable (to attacker) result"
+      }
+    ],
+    "success_condition": "attacker profits from mispriced operation based on stale oracle data",
+    "environment_requirements": [
+      "oracle in stale state",
+      "deployed contract that uses the feed for value-sensitive decisions"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000,
+      "fork": "optional_mainnet"
+    }
+  }
+}

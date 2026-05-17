@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "auth.authorization_predicate_poisoning",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "whitelist_positive",
+      "audit_json": "positive_whitelist.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "auth.authorization_predicate_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "validator_positive",
+      "audit_json": "positive_validator.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "auth.authorization_predicate_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "signature_guard_negative",
+      "audit_json": "negative_signature.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "auth.authorization_predicate_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "role_admin_negative",
+      "audit_json": "negative_role_admin.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "auth.authorization_predicate_poisoning"
+        ]
+      }
+    },
+    {
+      "id": "weak_label_inconclusive",
+      "audit_json": "inconclusive_weak_label.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "auth.authorization_predicate_poisoning"
+        ]
+      }
+    }
+  ]
+}

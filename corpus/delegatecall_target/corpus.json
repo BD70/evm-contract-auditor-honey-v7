@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "delegatecall.storage_controlled_target",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "storage_target_positive",
+      "audit_json": "positive_storage_target.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "delegatecall.storage_controlled_target"
+        ]
+      }
+    },
+    {
+      "id": "implementation_target_positive",
+      "audit_json": "positive_implementation_target.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "delegatecall.storage_controlled_target"
+        ]
+      }
+    },
+    {
+      "id": "fixed_clone_negative",
+      "audit_json": "negative_fixed_clone.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "delegatecall.storage_controlled_target"
+        ]
+      }
+    },
+    {
+      "id": "admin_guard_negative",
+      "audit_json": "negative_admin_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "delegatecall.storage_controlled_target"
+        ]
+      }
+    },
+    {
+      "id": "ambiguous_target_inconclusive",
+      "audit_json": "inconclusive_ambiguous.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "delegatecall.storage_controlled_target"
+        ]
+      }
+    }
+  ]
+}

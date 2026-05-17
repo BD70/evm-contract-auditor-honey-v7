@@ -1,0 +1,35 @@
+
+import { ingestWatcher } from "./ingest-watcher";
+import { runnerController } from "./runner-controller";
+import { ensurePanelDirs } from "./paths";
+import { ensurePruneSchedule } from "./prune-job";
+import { auditorBinInfo } from "./auditor-bin";
+
+type Globals = { __panelBooted?: boolean };
+const g = globalThis as unknown as Globals;
+
+export function bootOnce() {
+  if (g.__panelBooted) return;
+  g.__panelBooted = true;
+  try {
+    ensurePanelDirs();
+    ingestWatcher.startIfNeeded();
+    ensurePruneSchedule();
+    const bins = auditorBinInfo();
+    for (const { tool, resolved, source } of bins) {
+      console.info(`[panel] ${tool} → ${resolved} (${source})`);
+    }
+    if (
+      !process.env.PANEL_USER ||
+      !process.env.PANEL_PASS ||
+      process.env.PANEL_PASS === "changeme"
+    ) {
+      console.warn(
+        "[panel] WARNING: PANEL_USER/PANEL_PASS not set (or default). HTTP basic auth is insecure as-is.",
+      );
+    }
+  } catch (err) {
+    console.warn("[panel] boot warning:", err);
+  }
+  void runnerController; // keep singleton resident
+}

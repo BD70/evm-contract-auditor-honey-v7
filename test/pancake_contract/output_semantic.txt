@@ -1,0 +1,151 @@
+════════════════════════════════════════════════════════════════════════
+  EVM SEMANTIC DECONSTRUCTION REPORT
+════════════════════════════════════════════════════════════════════════
+
+────────────────────────────────────────────────────────────────────────
+  1. CONTRACT IDENTITY
+────────────────────────────────────────────────────────────────────────
+
+  Bytecode Size:    8745 bytes
+  Instructions:     5328
+  Hash:             0x8fa99288b1c4d4aea040e373bbcb0cf22b7ae35a39fd329141c14725a2936ce0
+  Compiler:         solc v0.8.20
+  Metadata:         ipfs:1220850b40c8f188529fe204...
+
+  ★ Contract Family: Unknown
+
+────────────────────────────────────────────────────────────────────────
+  2. INTERFACE TABLE
+────────────────────────────────────────────────────────────────────────
+
+  Selector     Signature                                     Source      
+  ──────────   ───────────────────────────────────────────   ──────────  
+  0xc6a2dd24   batchFlushERC1155Tokens(address,uint256[])    local_sqlite
+  0xf23a6e61   onERC1155Received(address,address,uint25...   bundled     
+  0xf684e1ed   autoFlush721()                                local_sqlite
+  0xbc197c81   onERC1155BatchReceived(address,address,u...   bundled     
+  0xc59f9f19   setAutoFlush721(bool)                         local_sqlite
+  0x77e60b35   callFromParent(address,uint256,bytes)         local_sqlite
+  0x8972c17c   flushERC1155Tokens(address,uint256)           local_sqlite
+  0x8acc01be   setAutoFlush1155(bool)                        local_sqlite
+  0xbad23ab9   autoFlush1155()                               local_sqlite
+  0x41275358   feeAddress()                                  local_sqlite
+  0x6b9f96ea   flush()                                       local_sqlite
+  0x71350aa1   batchFlushERC20Tokens(address[])              local_sqlite
+  0x2f738284   init(address,address,bool,bool)               local_sqlite
+  0x3ef13367   flushTokens(address)                          local_sqlite
+  0x01ffc9a7   supportsInterface(bytes4)                     bundled     
+  0x150b7a02   onERC721Received(address,address,uint256...   bundled     
+  0x159e44d7   flushERC721Token(address,uint256)             local_sqlite
+
+  Total: 17 functions
+  ✓ All selectors resolved
+
+────────────────────────────────────────────────────────────────────────
+  3. SEMANTIC ARCHITECTURE
+────────────────────────────────────────────────────────────────────────
+
+  No semantic patterns detected
+
+────────────────────────────────────────────────────────────────────────
+  4. STORAGE LAYOUT
+────────────────────────────────────────────────────────────────────────
+
+    slot 0:  owner (address) + paused (bool)  — packed  [confidence: 70%]
+    slot 1:  ? (address)  — packed  [confidence: 50%]
+
+  (2 computed/dynamic accesses not shown)
+
+────────────────────────────────────────────────────────────────────────
+  5. FUNCTION CARDS
+────────────────────────────────────────────────────────────────────────
+
+  ┌─ 0x01ffc9a7 ─ supportsInterface(bytes4)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x150b7a02 ─ onERC721Received(address,address,uint256,bytes)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x159e44d7 ─ flushERC721Token(address,uint256)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x2f738284 ─ init(address,address,bool,bool)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x3ef13367 ─ flushTokens(address)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x41275358 ─ feeAddress()
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable
+  │  reads:      slot_1
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x6b9f96ea ─ flush()
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x71350aa1 ─ batchFlushERC20Tokens(address[])
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x77e60b35 ─ callFromParent(address,uint256,bytes)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x8972c17c ─ flushERC1155Tokens(address,uint256)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0x8acc01be ─ setAutoFlush1155(bool)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0xbad23ab9 ─ autoFlush1155()
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable
+  │  reads:      slot_1
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0xbc197c81 ─ onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0xc59f9f19 ─ setAutoFlush721(bool)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0xc6a2dd24 ─ batchFlushERC1155Tokens(address,uint256[])
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0xf23a6e61 ─ onERC1155Received(address,address,uint256,uint256,bytes)
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable, calldatasize_check
+  └────────────────────────────────────────────────────────────
+
+  ┌─ 0xf684e1ed ─ autoFlush721()
+  │  mutability: nonpayable 📝
+  │  guards:     nonpayable
+  │  reads:      slot_1
+  └────────────────────────────────────────────────────────────
+
+════════════════════════════════════════════════════════════════════════

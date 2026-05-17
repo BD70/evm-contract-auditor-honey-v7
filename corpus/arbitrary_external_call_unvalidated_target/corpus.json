@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "call.arbitrary_external_call_unvalidated_target",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "calldata_target_and_calldata_data_blocklist_only_positive",
+      "audit_json": "positive_calldata_target_blocklist.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.arbitrary_external_call_unvalidated_target"
+        ]
+      }
+    },
+    {
+      "id": "calldata_target_accounting_drain_positive",
+      "audit_json": "positive_calldata_target_accounting.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "call.arbitrary_external_call_unvalidated_target"
+        ]
+      }
+    },
+    {
+      "id": "allowlist_guarded_target_negative",
+      "audit_json": "negative_allowlist_guard.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "call.arbitrary_external_call_unvalidated_target"
+        ]
+      }
+    },
+    {
+      "id": "unresolved_target_inconclusive",
+      "audit_json": "inconclusive_unresolved_target.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "call.arbitrary_external_call_unvalidated_target"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "schema": "evm-audit.behavior",
+  "schema_version": "2.0.0",
+  "engine_version": "2.0.0",
+  "ruleset_version": "2.0.0",
+  "bytecode_identity": {
+    "keccak256": "0xarbcall_neg1",
+    "original_keccak256": "0xarbcall_neg1",
+    "runtime_keccak256": "0xarbcall_neg1",
+    "metadata_stripped_keccak256": "0xarbcall_neg1"
+  },
+  "bytecode": {},
+  "contract": {
+    "family": "Unknown",
+    "protocol_roles": [],
+    "selectors": {
+      "resolved": [],
+      "unresolved": []
+    }
+  },
+  "functions": [],
+  "storage": {
+    "layout": [],
+    "reads": [],
+    "writes": []
+  },
+  "memory": {
+    "reads": [],
+    "writes": []
+  },
+  "arithmetic": {
+    "facts": [],
+    "summary": {}
+  },
+  "calls": [
+    {
+      "id": "unreachable:60:0x0393",
+      "kind": "external_call",
+      "target_origin": "calldata",
+      "target_controllability": "caller_controlled",
+      "address_validation": "none",
+      "reachable_effects": [
+        "asset_transfer",
+        "call_value_forwarding"
+      ]
+    }
+  ],
+  "events": [],
+  "flows": [],
+  "invariants": [],
+  "assumptions": [],
+  "analysis_warnings": [],
+  "coverage": {
+    "function_count": 8,
+    "functions_with_actions": 8,
+    "function_coverage": 1.0,
+    "unresolved_selector_count": 0,
+    "unknown_action_expression_count": 0,
+    "unresolved_path_count": 0,
+    "storage_role_confidence": 0.5,
+    "path_reachability_confidence": 0.7,
+    "external_call_resolution_confidence": 0.7,
+    "has_unmodeled_terminators": false,
+    "action_count": 8
+  },
+  "state_model": {
+    "schema": "evm-audit.state_model.v2",
+    "schema_version": "2.1.0",
+    "storage_entities": [],
+    "slot_index": [],
+    "path_index": [],
+    "guard_catalog": [
+      {
+        "id": "allowlist_guard:0x21c69a19",
+        "type": "allowlist_guard",
+        "strength": "strong"
+      },
+      {
+        "id": "registry_guard:0x21c69a19",
+        "type": "registry_guard",
+        "strength": "strong"
+      }
+    ],
+    "call_index": [
+      {
+        "id": "unreachable:60:0x0393",
+        "function": "0x21c69a19",
+        "kind": "external_call",
+        "target": "?",
+        "target_origin": "calldata",
+        "target_controllability": "caller_controlled",
+        "address_validation": "none",
+        "return_value_consumed": true,
+        "return_flow_effects": [
+          "asset_transfer",
+          "call_value_forwarding"
+        ],
+        "reachable_effects": [
+          "asset_transfer",
+          "call_value_forwarding"
+        ],
+        "guard_refs": [],
+        "trust": {
+          "source": "bytecode_inferred",
+          "confidence": 0.7,
+          "usable_as_detector_proof": true
+        }
+      }
+    ],
+    "economic_index": [],
+    "proxy_index": [],
+    "initializer_index": [],
+    "evidence_index": [],
+    "library_fingerprints": []
+  },
+  "checker_findings": [],
+  "global_tags": [
+    "owner_check"
+  ]
+}

@@ -1,0 +1,192 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "defi.erc4626.withdraw.missing_caller_authorization",
+    "internal_name": "reference_erc4626_withdraw_missing_caller_authorization_v1",
+    "title": "ERC4626 withdraw or redeem override burns owner shares and transfers assets without caller authorization",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.85,
+      "with_witness": 0.97,
+      "inconclusive": 0.38
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "erc4626_missing_caller_authorization",
+    "attack_thesis": "An ERC4626 vault override of withdraw or redeem directly burns shares from an arbitrary owner parameter and transfers underlying assets to an arbitrary receiver parameter without verifying that the caller is the owner or holds sufficient share allowance. Any external caller can drain any depositor.",
+    "protected_asset_or_effect": [
+      "depositor_principal",
+      "vault_share_ownership",
+      "asset_transfer_integrity"
+    ],
+    "exploit_model": "single_tx_repeatable"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "erc4626_vault_trait",
+      "withdraw_or_redeem_override",
+      "burn_target_is_owner_param",
+      "asset_transfer_target_is_receiver_param",
+      "caller_owner_authorization_absent",
+      "allowance_check_absent"
+    ],
+    "flows_all": [
+      {
+        "id": "unauthorized_owner_burn",
+        "description": "shares burned from owner parameter without caller==owner or allowance gate",
+        "from": "calldata_owner_param",
+        "to": "burn_effect",
+        "through": "no_authorization_guard"
+      },
+      {
+        "id": "unauthorized_asset_transfer",
+        "description": "underlying assets sent to receiver parameter after burning non-caller's shares",
+        "from": "burn_effect",
+        "to": "external_transfer_effect",
+        "target": "calldata_receiver_param"
+      }
+    ],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "burn",
+      "withdraw"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [
+      "depositor_fund_drainage",
+      "unauthorized_share_burn"
+    ],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "caller_equals_owner_guard",
+      "spend_allowance_check",
+      "delegated_via_internal_withdraw",
+      "owner_only_modifier",
+      "caller_must_equal_owner_require"
+    ],
+    "downgrade_if_any": [
+      "partial_allowance_check",
+      "admin_or_operator_guard",
+      "restricted_caller_set"
+    ],
+    "inconclusive_if_any": [
+      "weak_function_coverage",
+      "unresolved_burn_target",
+      "unresolved_authorization_path"
+    ],
+    "manual_review_if_any": [
+      "custom_delegation_pattern",
+      "meta_transaction_forwarder",
+      "proxy_forwarded_caller"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "withdraw_authorization_analysis",
+      "optional_adapters": [
+        "mythril",
+        "slither",
+        "halmos"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.8,
+    "min_storage_role_confidence": 0.55,
+    "min_path_reachability_confidence": 0.65,
+    "max_unknown_action_expression_count": 30,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/defi.erc4626.withdraw.missing_caller_authorization",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "erc4626_withdraw_no_auth_positive",
+      "erc4626_redeem_no_auth_positive",
+      "standard_erc4626_internal_withdraw_negative",
+      "explicit_owner_guard_negative",
+      "weak_function_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "ERC4626 vault withdraw/redeem allows unauthorized caller to drain any depositor",
+    "summary": "Matches an ERC4626 vault where withdraw() or redeem() overrides burn shares from a calldata-supplied owner and transfer assets to a calldata-supplied receiver without verifying the caller is authorized to act for that owner.",
+    "user_summary": "This vault lets anyone call withdraw or redeem with another user's address as the owner. The vault burns that user's shares and sends the underlying tokens to any address the caller chooses. An attacker can drain every depositor's funds in a single transaction.",
+    "technical_summary": "The detector identifies ERC4626 vault overrides of withdraw(uint256,address,address) or redeem(uint256,address,address) where the function performs _burn(owner, shares) and safeTransfer(receiver, assets) using calldata parameters, but the execution path contains neither a CALLER==owner equality check nor an allowance SLOAD+comparison before the burn. The standard ERC4626._withdraw() safeguard \u2014 if (caller != owner) _spendAllowance(owner, caller, shares) \u2014 is absent because the override reimplements the function directly without delegating to the base internal function.",
+    "exploit_narrative": "The attacker calls withdraw(victim_balance, attacker_address, victim_address) on the vault. Because the override never checks whether msg.sender is the victim or holds share allowance, the vault reads the victim's deposit info, burns the victim's shares, and sends the underlying USDC to the attacker. The attacker repeats this for each depositor, draining the entire vault. In the YieldCore RWAVault exploit, this pattern was used 8 times in one transaction to steal 392,763 USDC from 8 depositors.",
+    "exploit_preconditions": [
+      "vault inherits ERC4626 but overrides withdraw or redeem at the public function level",
+      "override reimplements burn-and-transfer logic without delegating to _withdraw()",
+      "override accepts owner as a calldata parameter and uses it for _burn() target",
+      "override accepts receiver as a calldata parameter and uses it for asset transfer target",
+      "no require(msg.sender == owner) or _spendAllowance check exists on the execution path"
+    ],
+    "remediation_hints": [
+      "override the internal _withdraw() function instead of the public withdraw()/redeem() functions",
+      "if overriding public withdraw/redeem, always include: if (msg.sender != owner) _spendAllowance(owner, msg.sender, shares)",
+      "add require(msg.sender == owner || allowance(owner, msg.sender) >= shares) before burning shares",
+      "follow OpenZeppelin's documented guidance: override _withdraw() and _deposit(), not the public entry points",
+      "add integration tests that verify a non-owner without allowance cannot call withdraw/redeem on behalf of another address"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "erc4626",
+        "authorization"
+      ],
+      "precision": "very-high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "withdraw/redeem override is missing allowance check",
+      "attacker knows victim address"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call withdraw/redeem passing victim as owner, attacker as receiver",
+        "expected_state": "victim shares burned; assets transferred to attacker without allowance"
+      }
+    ],
+    "success_condition": "attacker drains victim vault shares without authorization",
+    "environment_requirements": [
+      "deployed ERC4626 vault",
+      "victim with deposited shares"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

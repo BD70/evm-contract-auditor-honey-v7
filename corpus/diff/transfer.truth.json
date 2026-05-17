@@ -1,0 +1,11 @@
+{
+  "functions": [
+    {
+      "name": "transfer(address,uint256)",
+      "mutability": "nonpayable",
+      "writes": [
+        "balanceOf"
+      ]
+    }
+  ]
+}

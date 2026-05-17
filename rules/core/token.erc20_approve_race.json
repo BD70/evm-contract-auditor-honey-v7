@@ -1,0 +1,167 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "token.erc20_approve_race",
+    "internal_name": "reference_token_erc20_approve_race_v1",
+    "title": "ERC20 approve(spender, nonzero) without increaseAllowance or permit companion increases front-run risk",
+    "category": "token_security",
+    "severity": "medium",
+    "scope": "contract",
+    "lifecycle_status": "example",
+    "default_status": "suspicious_behavior",
+    "confidence_policy": {
+      "base": 0.6,
+      "with_witness": 0.76,
+      "inconclusive": 0.28
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "approve_front_run",
+    "attack_thesis": "The contract exposes approve(address,uint256) without increaseAllowance/decreaseAllowance or EIP-2612 permit companions. When a user reduces an existing allowance, a front-running spender can spend the old allowance before the reduction, then spend the new allowance \u2014 effectively spending both.",
+    "protected_asset_or_effect": [
+      "token_allowance_integrity",
+      "asset_transfer"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "APPROVE_SELECTOR_EXPOSED"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "approve_without_safe_companion",
+        "match": {
+          "selector": "0x095ea7b3",
+          "missing_companion_selectors": [
+            "0x39509351",
+            "0xa457c2d7",
+            "0xd505accf"
+          ]
+        },
+        "bind": {
+          "path": "$approve_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "permit_companion_guard",
+      "increaseAllowance_companion",
+      "PERMIT2_INTEGRATION",
+      "eip2612_permit"
+    ],
+    "downgrade_if_any": [
+      "allowance_zero_first_pattern",
+      "non_standard_token_context"
+    ],
+    "inconclusive_if_any": [
+      "allowance_pattern_unresolved"
+    ],
+    "manual_review_if_any": [
+      "custom_allowance_system"
+    ]
+  },
+  "proof": {
+    "min_level": "P2",
+    "preferred_witness": "invariant_argument",
+    "acceptable_witnesses": [
+      "invariant_argument",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "selector_presence_check",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.6,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 25,
+    "max_unresolved_paths": 15,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/erc20_approve_race",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "approve_no_companion_positive",
+      "permit2_companion_negative",
+      "allowance_pattern_unresolved_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "ERC20 approve without front-run-resistant companion functions",
+    "summary": "Matches ERC20 approve(address,uint256) exposure without increaseAllowance, decreaseAllowance, or EIP-2612 permit companion.",
+    "user_summary": "This token uses the classic ERC20 approve() function without front-run-resistant companions. When a user tries to change a spender's allowance from X to Y, the spender can front-run the transaction to spend X before it is overwritten, then spend Y \u2014 taking X+Y total instead of Y.",
+    "technical_summary": "The detector identifies contracts exposing the approve(address,uint256) selector (0x095ea7b3) without a companion increaseAllowance (0x39509351), decreaseAllowance (0xa457c2d7), or permit (0xd505accf) selector. This leaves the classic allowance race condition unmitigated.",
+    "exploit_narrative": "A user approved a spender for 100 tokens and wants to reduce it to 50. The spender monitors the mempool, front-runs the reduce-approval tx with a transferFrom for 100, then lets the 50-approval land and spends that too, for 150 total instead of 50.",
+    "exploit_preconditions": [
+      "spender is monitoring the mempool",
+      "user reduces allowance from nonzero to another nonzero",
+      "no increaseAllowance/permit prevents the race"
+    ],
+    "remediation_hints": [
+      "add increaseAllowance and decreaseAllowance functions (OZ ERC20 includes these)",
+      "implement EIP-2612 permit for nonce-based, signature-protected allowance",
+      "use the approve-to-zero-first pattern in documentation and user tooling"
+    ],
+    "sarif": {
+      "taxa": [
+        "token_security",
+        "front_running"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "user has existing nonzero allowance and wants to change it",
+      "spender monitors mempool"
+    ],
+    "steps": [
+      {
+        "actor": "spender",
+        "action": "detect user's approve(spender, Y) tx in mempool; front-run with transferFrom(user, attacker, X) spending old allowance X",
+        "expected_state": "old allowance X spent before reduction"
+      },
+      {
+        "actor": "spender",
+        "action": "after approve(spender, Y) lands, call transferFrom(user, attacker, Y)",
+        "expected_state": "new allowance Y also spent; total taken = X + Y"
+      }
+    ],
+    "success_condition": "spender drains X+Y tokens when user intended to allow only Y",
+    "environment_requirements": [
+      "mempool visibility",
+      "attacker-controlled spender account"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 500000
+    }
+  }
+}

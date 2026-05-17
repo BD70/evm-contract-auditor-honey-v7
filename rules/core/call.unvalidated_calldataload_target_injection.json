@@ -1,0 +1,178 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "call.unvalidated_calldataload_target_injection",
+    "internal_name": "reference_generic_unvalidated_calldataload_target_injection_v1",
+    "title": "Unvalidated calldata address used as trusted interface with return values driving asset operations",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "contract",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.8,
+      "with_witness": 0.95,
+      "inconclusive": 0.38
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence",
+      "external_call_resolution_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unvalidated_external_contract_injection",
+    "attack_thesis": "A function accepts an address from calldata, casts it to a protocol interface, and trusts return values from that unvalidated contract to drive asset transfers or accounting mutations. An attacker deploys a fake contract implementing the same interface but returning manipulated values, allowing zero-cost asset seizure.",
+    "protected_asset_or_effect": [
+      "collateral_integrity",
+      "accounting_integrity",
+      "asset_transfer_authorization"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "external_call": {
+      "target_origin_any": [
+        "calldata"
+      ],
+      "target_controllability": "caller_controlled",
+      "address_validation": "none",
+      "return_value_consumed": true,
+      "return_flow_effect_any": [
+        "asset_transfer",
+        "accounting_mutation"
+      ]
+    },
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "registry_guard",
+      "allowlist_guard",
+      "factory_deployed_check",
+      "onchain_registry_lookup",
+      "AUTH_GUARDED",
+      "tx_origin_whitelist",
+      "authorization_guard",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "PROXY_FORWARDING_PATTERN",
+      "proxy_safe_delegatecall",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "OZ_ACCESS_CONTROL"
+    ],
+    "downgrade_if_any": [
+      "partial_return_value_validation",
+      "DIAMOND_PROXY",
+      "GNOSIS_SAFE_PROXY",
+      "COMPOUND_UNITROLLER"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_call_target_origin"
+    ],
+    "manual_review_if_any": [
+      "offchain_registry_assumption"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path"
+    ],
+    "witness_generation": {
+      "native": "calldata_target_flow",
+      "optional_adapters": [
+        "mythril",
+        "halmos"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 100,
+    "max_unresolved_selector_count": 30,
+    "max_unresolved_paths": 20,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/unvalidated_calldataload_target",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "fake_reserve_injection_positive",
+      "fake_oracle_injection_positive",
+      "registry_validated_negative",
+      "allowlist_guarded_negative",
+      "weak_call_resolution_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Unvalidated external contract address enables fake interface injection",
+    "summary": "Matches functions that accept an address from calldata, call it as a trusted protocol interface, and use the return values to drive asset transfers or accounting mutations without validating the address against a registry or allowlist.",
+    "user_summary": "The contract accepts an external address as a parameter and trusts it as a legitimate protocol component without checking if it is registered. An attacker can deploy a fake contract that mimics the expected interface but returns manipulated data, causing the victim contract to transfer assets or miscalculate accounting under attacker-controlled conditions.",
+    "technical_summary": "The detector matches external calls where the target address originates from calldata with no on-chain validation (no mapping lookup, no allowlist check, no factory deployment verification). The return values from the unvalidated call flow into subsequent asset-transfer or accounting operations. This pattern allows an attacker to deploy a contract implementing the expected interface with crafted return values that manipulate token IDs, balances, prices, or other critical parameters consumed by the victim function.",
+    "exploit_narrative": "The attacker deploys a malicious contract that implements the same interface as the expected protocol component (e.g., a HouseOfReserve, oracle, or vault). The fake contract returns the real collateral token ID (to claim victims' assets) but a fake debt token ID or zero price (to avoid paying). The attacker then calls the vulnerable function, passing their fake contract address. The function trusts the return values and executes the asset transfer under the attacker's manipulated parameters.",
+    "exploit_preconditions": [
+      "a function accepts an address parameter from calldata and calls it as a protocol interface",
+      "no on-chain registry or allowlist validates the address before use",
+      "return values from the unvalidated call drive asset transfers or accounting decisions",
+      "the attacker can deploy a contract matching the expected interface"
+    ],
+    "remediation_hints": [
+      "validate external contract addresses against an on-chain registry or allowlist before use",
+      "use a factory pattern where only factory-deployed contracts are accepted",
+      "store registered contract addresses in a mapping and require callers to pass an ID rather than a raw address",
+      "verify the address against a stored set of approved protocol components"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "input_validation"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "CALL target is derived from calldata without allowlist check"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call function passing attacker-controlled address as call target",
+        "expected_state": "contract issues CALL to attacker-controlled contract forwarding value or sensitive data"
+      }
+    ],
+    "success_condition": "attacker receives forwarded value/data or executes callback code in victim context",
+    "environment_requirements": [
+      "attacker-controlled contract",
+      "deployed victim contract"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

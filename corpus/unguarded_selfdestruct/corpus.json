@@ -1,0 +1,69 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "control.unguarded_selfdestruct",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "public_selfdestruct_positive",
+      "audit_json": "positive_public_selfdestruct.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "control.unguarded_selfdestruct"
+        ]
+      }
+    },
+    {
+      "id": "fallback_selfdestruct_positive",
+      "audit_json": "positive_fallback_selfdestruct.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "control.unguarded_selfdestruct"
+        ]
+      }
+    },
+    {
+      "id": "owner_guarded_negative",
+      "audit_json": "negative_owner_guarded.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "control.unguarded_selfdestruct"
+        ]
+      }
+    },
+    {
+      "id": "admin_guarded_negative",
+      "audit_json": "negative_admin_guarded.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "control.unguarded_selfdestruct"
+        ]
+      }
+    },
+    {
+      "id": "weak_coverage_inconclusive",
+      "audit_json": "inconclusive_weak_coverage.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "control.unguarded_selfdestruct"
+        ]
+      }
+    }
+  ]
+}

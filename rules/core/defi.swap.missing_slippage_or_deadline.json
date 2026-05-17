@@ -1,0 +1,184 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "defi.swap.missing_slippage_or_deadline",
+    "internal_name": "reference_defi_swap_missing_slippage_deadline_v1",
+    "title": "Swap-like function lacks slippage protection (minAmountOut) or deadline parameter in comparisons",
+    "category": "defi_logic",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "suspicious_behavior",
+    "confidence_policy": {
+      "base": 0.65,
+      "with_witness": 0.82,
+      "inconclusive": 0.3
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "missing_slippage_protection",
+    "attack_thesis": "A swap or liquidity function accepts calldata arguments named minAmountOut, minOut, amountOutMin, or deadline but never uses them in a comparison that would revert. Without slippage protection, a sandwich attacker can front-run the swap to move the price, then back-run to profit, while the user receives far less than expected.",
+    "protected_asset_or_effect": [
+      "swap_output_integrity",
+      "asset_transfer"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "SWAP_OR_LIQUIDITY_PATTERN"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "swap_without_slippage_check",
+        "match": {
+          "function": {
+            "has_swap_signature": true,
+            "calldata_param_unused_in_comparison": [
+              "minAmountOut",
+              "minOut",
+              "amountOutMin",
+              "minReturn",
+              "deadline"
+            ]
+          },
+          "reachable_effect_any": [
+            "asset_transfer",
+            "accounting_mutation"
+          ]
+        },
+        "bind": {
+          "path": "$swap_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "slippage_check_guard",
+      "deadline_check_guard",
+      "amountOut_ge_minOut_revert",
+      "block_timestamp_le_deadline_revert"
+    ],
+    "downgrade_if_any": [
+      "partial_slippage_check",
+      "off_chain_slippage_enforcement"
+    ],
+    "inconclusive_if_any": [
+      "unresolved_comparison_path",
+      "custom_swap_accounting"
+    ],
+    "manual_review_if_any": [
+      "aggregator_delegates_slippage"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "calldata_param_comparison_trace",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.65,
+    "max_unknown_action_expression_count": 50,
+    "max_unresolved_selector_count": 25,
+    "max_unresolved_paths": 15,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/swap_slippage_deadline",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "swap_no_slippage_check_positive",
+      "amountOut_ge_minOut_checked_negative",
+      "custom_accounting_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Swap function missing slippage protection or deadline check",
+    "summary": "Matches swap-like functions where minAmountOut or deadline calldata arguments are never used in a comparison that would revert.",
+    "user_summary": "This swap function does not enforce slippage limits or a deadline. Without slippage protection, a sandwich attacker can manipulate the pool price before and after the swap, causing the user to receive far less than the market rate. Without a deadline, the transaction can be held in the mempool and executed at an unfavorable price much later.",
+    "technical_summary": "The detector identifies functions with swap-like signatures where calldata parameters commonly used for slippage (minAmountOut, minOut, amountOutMin) and deadline enforcement are never consumed in LT/GT/LTE/GTE comparisons that would trigger a REVERT path. This means slippage protection parameters exist in the ABI but are not enforced.",
+    "exploit_narrative": "The user submits a swap with amountOutMin=0 or no deadline. A sandwich bot front-runs with a buy to inflate the price, lets the user's swap execute at the inflated price, then sells to profit. The user receives significantly fewer tokens than expected. Alternatively, a stale transaction executes hours later at a price the user would have rejected.",
+    "exploit_preconditions": [
+      "swap function accepts minAmountOut but does not enforce it",
+      "no deadline or deadline not checked",
+      "front-running is possible (public mempool)"
+    ],
+    "remediation_hints": [
+      "add require(amountOut >= minAmountOut, 'Insufficient output') before returning tokens",
+      "add require(block.timestamp <= deadline, 'Expired') at function start",
+      "never allow callers to set minAmountOut=0 without explicit acknowledgment"
+    ],
+    "sarif": {
+      "taxa": [
+        "defi_logic",
+        "mev_protection"
+      ],
+      "precision": "medium"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "swap function does not enforce minAmountOut",
+      "public mempool enables front-running"
+    ],
+    "steps": [
+      {
+        "actor": "sandwich_bot",
+        "action": "detect user swap in mempool; front-run with buy to inflate pool price",
+        "expected_state": "pool price increases against user's swap direction"
+      },
+      {
+        "actor": "victim",
+        "action": "swap executes at inflated price; receives far fewer tokens than expected",
+        "expected_state": "victim receives output_actual << output_expected due to no slippage floor"
+      },
+      {
+        "actor": "sandwich_bot",
+        "action": "back-run with sell to return pool to original price; profit = price_impact * swap_amount",
+        "expected_state": "sandwich bot profits at victim's expense"
+      }
+    ],
+    "success_condition": "sandwich bot extracts MEV at victim's expense due to missing slippage protection",
+    "environment_requirements": [
+      "mempool visibility",
+      "AMM or similar pool",
+      "bot infrastructure"
+    ],
+    "budget_hint": {
+      "max_tx": 3,
+      "max_gas": 1500000
+    }
+  }
+}

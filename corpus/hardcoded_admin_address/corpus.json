@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "access.hardcoded_admin_address",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "hardcoded_owner_positive",
+      "audit_json": "positive_hardcoded_owner.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "access.hardcoded_admin_address"
+        ]
+      }
+    },
+    {
+      "id": "hardcoded_immutable_positive",
+      "audit_json": "positive_hardcoded_immutable.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "access.hardcoded_admin_address"
+        ]
+      }
+    },
+    {
+      "id": "access_control_negative",
+      "audit_json": "negative_access_control.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "access.hardcoded_admin_address"
+        ]
+      }
+    },
+    {
+      "id": "partial_role_evidence_inconclusive",
+      "audit_json": "inconclusive_partial_evidence.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "access.hardcoded_admin_address"
+        ]
+      }
+    }
+  ]
+}

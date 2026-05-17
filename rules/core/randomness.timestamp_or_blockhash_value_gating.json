@@ -1,0 +1,183 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.1.0",
+  "rule": {
+    "id": "randomness.timestamp_or_blockhash_value_gating",
+    "internal_name": "reference_randomness_timestamp_blockhash_value_gating_v1",
+    "title": "block.timestamp, blockhash, or prevrandao used to gate value-transferring effect",
+    "category": "insecure_randomness",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.72,
+      "with_witness": 0.88,
+      "inconclusive": 0.34
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "insecure_randomness",
+    "attack_thesis": "TIMESTAMP, BLOCKHASH, or PREVRANDAO flows into a modulo or comparison operation that gates a value-transferring effect. These values are either miner-influenceable (TIMESTAMP, BLOCKHASH) or predictable before transaction execution, enabling exploitation of randomness-dependent state transitions.",
+    "protected_asset_or_effect": [
+      "asset_transfer",
+      "lottery_outcome",
+      "game_result"
+    ],
+    "exploit_model": "single_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "BLOCK_PROPERTY_IN_COMPARISON"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "mint",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "block_property_to_value_gate",
+        "match": {
+          "dataflow": {
+            "source_opcode_any": [
+              "TIMESTAMP",
+              "BLOCKHASH",
+              "PREVRANDAO",
+              "DIFFICULTY"
+            ],
+            "through_opcode_any": [
+              "MOD",
+              "AND",
+              "EQ",
+              "LT",
+              "GT"
+            ],
+            "gates_effect_any": [
+              "asset_transfer",
+              "mint",
+              "accounting_mutation"
+            ]
+          }
+        },
+        "bind": {
+          "path": "$randomness_path"
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "vrf_guard",
+      "commit_reveal_guard",
+      "chainlink_vrf_call",
+      "randomness_oracle_guard"
+    ],
+    "downgrade_if_any": [
+      "timestamp_used_as_deadline_only",
+      "blockhash_used_for_logging_only"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_randomness_consumption",
+      "low_value_gate"
+    ],
+    "manual_review_if_any": [
+      "custom_randomness_scheme"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "symbolic_counterexample"
+    ],
+    "witness_generation": {
+      "native": "block_property_dataflow_trace",
+      "optional_adapters": [
+        "mythril",
+        "halmos"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.7,
+    "max_unknown_action_expression_count": 40,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/timestamp_blockhash_gating",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 1,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "timestamp_mod_prize_positive",
+      "chainlink_vrf_negative",
+      "view_only_gating_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Miner-influenceable block property gates value transfer",
+    "summary": "Matches functions where TIMESTAMP, BLOCKHASH, or PREVRANDAO flows through MOD/AND/EQ into a condition that controls a value-transferring effect.",
+    "user_summary": "This contract uses block properties (timestamp, block hash, or difficulty) as a source of randomness to decide who receives funds or a prize. Miners and validators can influence these values within a small window. An attacker acting as or colluding with a miner can time their transactions to win consistently.",
+    "technical_summary": "The detector identifies dataflow from TIMESTAMP/BLOCKHASH/PREVRANDAO/DIFFICULTY opcodes through arithmetic comparison (MOD, AND, EQ, LT, GT) into a branch guarding an asset_transfer or mint effect. No commit-reveal scheme, Chainlink VRF, or equivalent cryptographic randomness source is present.",
+    "exploit_narrative": "An attacker (or miner/validator) computes which block timestamp or block hash produces a winning outcome. The attacker times their transaction to land in a block where the computation yields the favorable result, consistently winning lotteries, games, or randomized distributions.",
+    "exploit_preconditions": [
+      "randomness derived from block property",
+      "block property used in modulo or comparison gating value transfer",
+      "no cryptographically secure randomness source (VRF, commit-reveal)"
+    ],
+    "remediation_hints": [
+      "use Chainlink VRF or equivalent decentralized randomness oracle",
+      "implement a commit-reveal scheme where randomness is contributed before it can be predicted",
+      "avoid using block.timestamp or blockhash for randomness in any value-sensitive context"
+    ],
+    "sarif": {
+      "taxa": [
+        "insecure_randomness",
+        "miner_manipulation"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "randomness derived from block.timestamp or blockhash",
+      "attacker can predict or influence block property"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "compute block timestamp/hash combination that produces winning modulo result; submit transaction in target block",
+        "expected_state": "randomness check evaluates favorably; asset_transfer or mint effect reaches attacker"
+      }
+    ],
+    "success_condition": "attacker receives prize/reward/tokens by exploiting predictable randomness source",
+    "environment_requirements": [
+      "attacker with block timing control or colluding validator"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

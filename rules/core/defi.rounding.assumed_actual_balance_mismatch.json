@@ -1,0 +1,164 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "defi.rounding.assumed_actual_balance_mismatch",
+    "internal_name": "reference_defi_assumed_actual_balance_mismatch_v1",
+    "title": "Assumed accounting balance can diverge from actual settlement after rounding",
+    "category": "arithmetic_invariant",
+    "severity": "high",
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.78,
+      "with_witness": 0.94,
+      "inconclusive": 0.37
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "accounting_rounding_mismatch",
+    "attack_thesis": "Fixed-point scaling and pricing rely on an assumed rounded balance while settlement or storage updates use a different actual amount, creating repeatable economic leakage.",
+    "protected_asset_or_effect": [
+      "pool_accounting",
+      "pricing_integrity"
+    ],
+    "exploit_model": "single_tx_or_repeated_tx"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "fixed_point_floor_mul_or_div",
+      "invariant_calculation",
+      "balance_assumption_used_for_pricing",
+      "state_update_or_settlement_uses_different_amount"
+    ],
+    "flows_all": [
+      {
+        "source": "user_amount_out",
+        "through": "floor_scaling",
+        "sink": "amount_in_or_invariant"
+      }
+    ],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [
+      "rounding_sensitive_accounting"
+    ],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "rounding_direction_matches_asset_side",
+      "minimum_liquidity_guard_eliminates_precision_loss"
+    ],
+    "downgrade_if_any": [
+      "single_use_rounding_surface"
+    ],
+    "inconclusive_if_any": [
+      "missing_settlement_alignment"
+    ],
+    "manual_review_if_any": [
+      "protocol_specific_virtual_balance"
+    ]
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "deterministic_arithmetic_witness",
+    "acceptable_witnesses": [
+      "deterministic_arithmetic_witness",
+      "symbolic_counterexample"
+    ],
+    "witness_generation": {
+      "native": "deterministic_arithmetic_search",
+      "optional_adapters": [
+        "halmos",
+        "echidna"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.9,
+    "min_storage_role_confidence": 0.7,
+    "min_path_reachability_confidence": 0.85,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 6,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/rounding",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "rounded_balance_positive",
+      "repeatable_rounding_positive",
+      "directional_rounding_negative",
+      "min_liquidity_negative",
+      "missing_settlement_alignment_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Rounded assumed balance diverges from actual settlement",
+    "summary": "Matches fixed-point floor scaling when pricing depends on an assumed balance and settlement uses a different actual amount, with deterministic arithmetic evidence.",
+    "user_summary": "The contract's math may round one side of an accounting or pricing calculation differently from the amount it later settles in storage. In low-liquidity or repeated cases, that mismatch can leak value over time.",
+    "technical_summary": "The detector matches fixed-point floor scaling and an invariant or pricing path that uses an assumed rounded balance while settlement or state update consumes a different actual amount. The attached arithmetic witness shows a concrete amount where rounding discards value in a way that can become economically material.",
+    "exploit_narrative": "An attacker chooses amounts that land on a truncation boundary. The protocol prices or validates the action using a rounded assumption, but settles with a different effective quantity, allowing small but repeatable value extraction across repeated interactions.",
+    "exploit_preconditions": [
+      "low liquidity or small amounts make discarded precision material",
+      "pricing or invariant path uses the rounded assumption",
+      "settlement or state update can consume a different actual amount"
+    ],
+    "remediation_hints": [
+      "align rounding direction with the protected asset side",
+      "introduce minimum-liquidity or minimum-amount guards",
+      "ensure pricing and settlement consume the same effective quantity"
+    ],
+    "sarif": {
+      "taxa": [
+        "arithmetic",
+        "defi"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "contract accepts fee-on-transfer or rebasing token",
+      "accounting uses assumed balance"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "transfer fee-on-transfer token to contract, triggering assumption mismatch",
+        "expected_state": "contract records assumed amount but actual amount is lower due to fee"
+      },
+      {
+        "actor": "attacker",
+        "action": "withdraw using credited assumed amount",
+        "expected_state": "withdraw succeeds for more than actual available, draining other depositors"
+      }
+    ],
+    "success_condition": "attacker extracts more value than deposited by exploiting assumed vs actual balance divergence",
+    "environment_requirements": [
+      "fee-on-transfer token deployment",
+      "contract with liquidity"
+    ],
+    "budget_hint": {
+      "max_tx": 3,
+      "max_gas": 2000000
+    }
+  }
+}

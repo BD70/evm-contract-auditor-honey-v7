@@ -1,0 +1,59 @@
+{
+  "schema": "evm-audit.corpus.v1",
+  "schema_version": "1.0.0",
+  "detector_id": "token.unsafe_erc20_assumption",
+  "scenario_taxonomy": [
+    "positive",
+    "negative",
+    "inconclusive"
+  ],
+  "metrics": {
+    "unit_fixture_metrics": {
+      "false_positive_count": 0,
+      "false_negative_count": 0
+    },
+    "benchmark_metrics": {}
+  },
+  "cases": [
+    {
+      "id": "bare_transfer_no_check_positive",
+      "audit_json": "positive_bare_transfer.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.unsafe_erc20_assumption"
+        ]
+      }
+    },
+    {
+      "id": "bare_transferfrom_no_check_positive",
+      "audit_json": "positive_bare_transferfrom.audit.json",
+      "expectation": {
+        "kind": "positive",
+        "rule_ids": [
+          "token.unsafe_erc20_assumption"
+        ]
+      }
+    },
+    {
+      "id": "safeTransfer_wrapper_negative",
+      "audit_json": "negative_safe_wrapper.audit.json",
+      "expectation": {
+        "kind": "negative",
+        "rule_ids": [
+          "token.unsafe_erc20_assumption"
+        ]
+      }
+    },
+    {
+      "id": "ambiguous_return_value_inconclusive",
+      "audit_json": "inconclusive_ambiguous_return.audit.json",
+      "expectation": {
+        "kind": "inconclusive",
+        "rule_ids": [
+          "token.unsafe_erc20_assumption"
+        ]
+      }
+    }
+  ]
+}

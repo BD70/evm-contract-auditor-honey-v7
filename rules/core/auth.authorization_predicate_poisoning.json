@@ -1,0 +1,213 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "auth.authorization_predicate_poisoning",
+    "internal_name": "reference_generic_authorization_predicate_poisoning_v1",
+    "title": "Authorization predicate state can be poisoned before privileged use",
+    "category": "authorization_misuse",
+    "severity": "high",
+    "scope": "multi_tx",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.75,
+      "with_witness": 0.9,
+      "inconclusive": 0.39
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "authorization_predicate_poisoning",
+    "attack_thesis": "Authorization predicate state such as whitelist, signer, operator, validator, or reporter membership can be attacker-controlled and later consumed to authorize a sensitive action.",
+    "protected_asset_or_effect": [
+      "withdrawal_rights",
+      "mint_authority",
+      "message_approval",
+      "external_call_authority"
+    ],
+    "exploit_model": "multi_tx"
+  },
+  "requires": {
+    "stateful": true,
+    "facts_all": [],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [
+      "authorize_message",
+      "authorize_upgrade",
+      "authorize_mint",
+      "authorize_withdrawal",
+      "authorize_external_call"
+    ],
+    "economic_effect_any": [],
+    "sequence": [
+      {
+        "id": "poison_auth_state",
+        "match": {
+          "storage_write": {
+            "semantic_role_any": [
+              "authorization_predicate",
+              "role"
+            ],
+            "user_controlled_write_value": true,
+            "caller_reachability": "external_untrusted",
+            "caller_constraint": "missing_or_weak",
+            "write_origin_any": [
+              "calldata",
+              "caller"
+            ],
+            "min_role_confidence": 0.75
+          }
+        },
+        "bind": {
+          "slot": "$slot",
+          "path": "$writer_path"
+        }
+      },
+      {
+        "id": "later_auth_use",
+        "match": {
+          "storage_read": {
+            "same_slot_as": "$slot",
+            "used_in": "authorization_guard",
+            "min_role_confidence": 0.75
+          },
+          "authorized_path_effect_any": [
+            "authorize_message",
+            "authorize_upgrade",
+            "authorize_mint",
+            "authorize_withdrawal",
+            "authorize_external_call"
+          ]
+        }
+      }
+    ]
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "signature_authorization_guard",
+      "role_admin_guard",
+      "governed_predicate_update",
+      "ADMIN_GUARD",
+      "admin_guarded_function",
+      "STRONG_AUTH_GUARD",
+      "KNOWN_SAFE_PROXY_PATTERN",
+      "OZ_OWNABLE2STEP",
+      "OZ_ACCESS_CONTROL",
+      "OZ_TIMELOCK_CONTROLLER"
+    ],
+    "downgrade_if_any": [
+      "partial_domain_separation",
+      "TWO_STEP_UPGRADE",
+      "GNOSIS_SAFE_PROXY",
+      "COMPOUND_UNITROLLER",
+      "OZ_OWNABLE"
+    ],
+    "inconclusive_if_any": [
+      "weak_auth_state_label",
+      "DIAMOND_PROXY"
+    ],
+    "manual_review_if_any": [
+      "offchain_operator_rotation",
+      "SLOT0_PROXY"
+    ]
+  },
+  "proof": {
+    "min_level": "P3",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "bound_sequence",
+      "optional_adapters": [
+        "mythril",
+        "halmos",
+        "slither"
+      ]
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.88,
+    "min_storage_role_confidence": 0.75,
+    "min_path_reachability_confidence": 0.8,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": true,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/auth_predicate_poisoning",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "whitelist_poison_positive",
+      "validator_poison_positive",
+      "signature_guard_negative",
+      "role_admin_negative",
+      "weak_role_label_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Authorization predicate poisoning unlocks privileged behavior",
+    "summary": "Matches writes into authorization predicate state when the same state later authorizes a sensitive action or message.",
+    "user_summary": "The contract may let an attacker tamper with whitelist, signer, operator, or validator-like state, then trust that tampered state later when approving sensitive actions. That can let an untrusted party bypass intended authorization.",
+    "technical_summary": "The detector matches attacker-controlled writes into authorization predicate state such as whitelist, signer, operator, validator, reporter, or role membership slots, then binds the same slot to a later authorization guard that unlocks message approval, upgrade, mint, withdrawal, or external call authority.",
+    "exploit_narrative": "The attacker first poisons membership or signer-like state through a weakly protected update path. Later, the contract consumes that same state in an authorization check and accepts a sensitive action because the predicate now incorrectly marks the attacker as trusted.",
+    "exploit_preconditions": [
+      "attacker can influence whitelist/signer/operator-like state",
+      "same authorization state later gates a privileged effect",
+      "strong signature or governance controls are absent"
+    ],
+    "remediation_hints": [
+      "require trusted role-admin or governance approval for predicate updates",
+      "use signatures with domain separation, nonce consumption, and replay protection",
+      "avoid directly trusting user-controlled membership writes"
+    ],
+    "sarif": {
+      "taxa": [
+        "authorization"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_tx_exploit",
+    "preconditions": [
+      "auth predicate slot is externally writable without strong guard"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "write attacker-controlled value into authorization predicate slot",
+        "expected_state": "predicate slot contains attacker-controlled value"
+      },
+      {
+        "actor": "attacker",
+        "action": "invoke guarded function that reads poisoned predicate as auth check",
+        "expected_state": "sensitive effect reached because poisoned predicate evaluated to authorized"
+      }
+    ],
+    "success_condition": "attacker bypasses authorization check and reaches sensitive effect using poisoned predicate",
+    "environment_requirements": [
+      "deployed contract"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 1000000
+    }
+  }
+}

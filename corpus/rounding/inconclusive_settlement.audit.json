@@ -1,0 +1,152 @@
+{
+    "schema": "evm-audit.behavior",
+    "schema_version": "1.0.0",
+    "engine_version": "1.0.0",
+    "ruleset_version": "1.0.0",
+    "bytecode_identity": {
+        "keccak256": "0xroundi1",
+        "original_keccak256": "0xroundi1",
+        "runtime_keccak256": "0xroundi1",
+        "metadata_stripped_keccak256": "0xroundi1"
+    },
+    "bytecode": {
+        "analysis_hash": "0xroundi1"
+    },
+    "contract": {
+        "family": "Unknown",
+        "protocol_roles": [],
+        "selectors": {
+            "resolved": [],
+            "unresolved": [
+                "0x33333333",
+                "0x34343434"
+            ]
+        }
+    },
+    "functions": [
+        {
+            "identity": {
+                "selector": "0x33333333",
+                "name": null,
+                "candidate_names": []
+            },
+            "actions": [
+                {
+                    "id": "i0",
+                    "type": "SLOAD",
+                    "offset": "0x0300",
+                    "block": 1
+                }
+            ],
+            "state": {
+                "reads": [],
+                "writes": []
+            },
+            "memory": {
+                "reads": [],
+                "writes": []
+            },
+            "external_calls": [],
+            "arithmetic": [
+                {
+                    "id": "ia0",
+                    "operation": "fixed_point_mul_div",
+                    "expression": "floor(user_amount_out * scaling_factor / 1000000000000000000)",
+                    "denominator": "1000000000000000000",
+                    "scaling_factor": "1000000000000000001",
+                    "rounding": "floor",
+                    "precision_loss_risk": "needs_review",
+                    "behavior_tags": [
+                        "fixed_point_floor_mul_or_div"
+                    ],
+                    "economic_effects": [
+                        "rounding_sensitive_accounting"
+                    ]
+                }
+            ],
+            "flows": [
+                {
+                    "source": "user_amount_out",
+                    "through": [
+                        "floor_scaling"
+                    ],
+                    "sink": "amount_in_or_invariant"
+                }
+            ],
+            "guards": [],
+            "events": [],
+            "loops": [],
+            "path_conditions": [],
+            "behavior_tags": [
+                "fixed_point_floor_mul_or_div",
+                "invariant_calculation",
+                "balance_assumption_used_for_pricing",
+                "state_update_or_settlement_uses_different_amount",
+                "missing_settlement_alignment"
+            ],
+            "confidence": 0.62
+        }
+    ],
+    "storage": {
+        "layout": [],
+        "reads": [],
+        "writes": []
+    },
+    "memory": {
+        "reads": [],
+        "writes": []
+    },
+    "arithmetic": {
+        "facts": [],
+        "summary": {
+            "count": 1,
+            "fixed_point_floor_count": 1,
+            "precision_loss_candidates": 1
+        }
+    },
+    "calls": [],
+    "events": [],
+    "flows": [],
+    "invariants": [
+        {
+            "id": "inv4",
+            "function": "0x33333333",
+            "kind": "rounding_sensitive_accounting"
+        }
+    ],
+    "assumptions": [],
+    "analysis_warnings": [],
+    "coverage": {
+        "function_count": 1,
+        "functions_with_actions": 1,
+        "function_coverage": 0.45,
+        "unresolved_selector_count": 2,
+        "unknown_action_expression_count": 2,
+        "unresolved_path_count": 2,
+        "storage_role_confidence": 0.65,
+        "path_reachability_confidence": 0.62,
+        "has_unmodeled_terminators": false,
+        "action_count": 1
+    },
+    "state_model": {
+        "schema": "evm-audit.state_model.v1",
+        "schema_version": "1.0.0",
+        "storage_entities": [],
+        "slot_index": [],
+        "path_index": [],
+        "guard_catalog": [],
+        "call_index": [],
+        "economic_index": [],
+        "proxy_index": [],
+        "initializer_index": [],
+        "evidence_index": [
+            {
+                "id": "i0",
+                "kind": "action",
+                "function": "0x33333333",
+                "offset": "0x0300"
+            }
+        ]
+    },
+    "checker_findings": []
+}
