@@ -61,6 +61,15 @@ import {
 import { buildInitTakeoverPhase1, probeInitTakeoverIsStillValid } from "./rescue/init-takeover";
 import { shouldUseFlashloanStub, grantFlashCapital } from "./rescue/flashloan";
 import {
+  needsSafeProposal,
+  safeAppDeeplink,
+  safeTxServiceEndpoint,
+  safeInstructionsFor,
+  SAFE_CHAINS,
+} from "./rescue/safe-tx";
+import { probeExtraAdminSlots } from "./rescue/extra-admin-slots";
+import { flashloanReceiverFor } from "./rescue/flashloan-receiver";
+import {
   newAttemptId,
   persistPoe,
   logRescueAction,
@@ -74,7 +83,7 @@ import {
 import { rawDb } from "@/src/db/client";
 
 export const ENGINE_ID = "rescue-prove";
-export const ENGINE_VERSION = "3";
+export const ENGINE_VERSION = "4";
 
 // v2: owner impersonation gate. Default ON because the panel operator's
 // stated workflow is "deployer authorises us off-chain, then we rescue".
@@ -284,6 +293,33 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
     const pre = await readBalances(url, input.chainId, input.contractAddress, exposure);
     const escrowPre = await readBalances(url, input.chainId, DEFAULT_ESCROW, exposure);
 
+    // v4-X: bespoke-proxy storage-slot probe. Operators with custom proxy
+    // patterns can list extra slots in RESCUE_EXTRA_ADMIN_SLOTS; we read
+    // each and surface (slot -> probableAddress) in PoE notes. This is
+    // diagnostic only in v4 — it doesn't yet drive new drain steps, but
+    // makes it possible for the operator to spot the actual owner slot
+    // when the standard heuristics miss.
+    const extraSlots = await probeExtraAdminSlots({
+      url,
+      contractAddress: input.contractAddress,
+    });
+    if (extraSlots.length > 0) {
+      const hits = extraSlots.filter((s) => s.probableAddress != null);
+      if (hits.length > 0) {
+        planResult.notes.push(
+          `v4-X: extra-admin-slot probe found ${hits.length} non-zero slot(s): ` +
+            hits
+              .slice(0, 3)
+              .map((s) => `${s.slot.slice(0, 10)}…→${s.probableAddress!.slice(0, 10)}…`)
+              .join(", "),
+        );
+      } else {
+        planResult.notes.push(
+          `v4-X: probed ${extraSlots.length} extra admin slot(s); all empty/zero`,
+        );
+      }
+    }
+
     // v3-Q: token-quirk pre-flight. For every token in exposure with a
     // non-zero balance, probe whether transfer(escrow, bal) is even
     // possible. Tag the result; we'll attach the quirk info to the per-
@@ -486,9 +522,59 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       ruleFamily !== "economic"
     ) {
       notes.push(
-        `Rule family '${ruleFamily}' is partially supported by rescue-prove@3 (only via the ` +
+        `Rule family '${ruleFamily}' is partially supported by rescue-prove@4 (only via the ` +
           `admin-name heuristic). Verdict reflects best-effort.`,
       );
+    }
+
+    // v4-Safe: if the owner is a Safe multisig AND at least one drain
+    // step needed owner-execution, flip the verdict to requires_safe_signing.
+    // The drainPlan is preserved so the operator can paste it into the
+    // Safe app's Transaction Builder.
+    const safeAddress = needsSafeProposal({
+      evidence: input.evidence,
+      executorOwner: ownerAddr,
+    });
+    let safeRequirement: PoeArtifact["safeRequirement"] = null;
+    if (safeAddress && plan.some((s) => s.executor === "owner")) {
+      const ownerCls = (input.evidence as any)?.ownerClassification ?? null;
+      const safeChain = SAFE_CHAINS[input.chainId];
+      const deeplink = safeAppDeeplink(input.chainId, safeAddress);
+      const endpoint = safeTxServiceEndpoint(input.chainId, safeAddress);
+      const instructions = safeInstructionsFor(
+        input.chainId,
+        safeAddress,
+        plan.map((s) => ({ to: s.to, data: s.data, value: s.value, asset: s.asset })),
+      ).split("\n");
+      safeRequirement = {
+        safeAddress,
+        chainShortName: safeChain?.shortName ?? null,
+        threshold: typeof ownerCls?.threshold === "number" ? ownerCls.threshold : null,
+        ownerCount: typeof ownerCls?.ownerCount === "number" ? ownerCls.ownerCount : null,
+        appDeeplink: deeplink,
+        txServiceEndpoint: endpoint,
+        instructions,
+      };
+      // Only flip verdict if we WERE about to claim true_positive_*. For
+      // already-failed verdicts (no_rescue_possible, trapped, etc) we keep
+      // the original verdict and just attach the safeRequirement metadata.
+      if (verdict === "true_positive_drained" || verdict === "true_positive_partial") {
+        verdict = "requires_safe_signing";
+        notes.push(
+          `v4-Safe: owner is a Safe ${
+            ownerCls?.threshold && ownerCls?.ownerCount
+              ? `${ownerCls.threshold}/${ownerCls.ownerCount} `
+              : ""
+          }multisig at ${safeAddress}. Drain plan was simulated successfully via owner-impersonation ` +
+            `on the fork, but live broadcast requires the multisig signers to PROPOSE and APPROVE ` +
+            `each step through the Safe app (see safeRequirement.appDeeplink).`,
+        );
+      } else {
+        notes.push(
+          `v4-Safe: owner is a Safe multisig (${safeAddress}). Drain steps tagged executor="owner" ` +
+            `would need multisig proposal; see safeRequirement for the deeplink.`,
+        );
+      }
     }
     // Surface plan-builder notes (weth-unwrap prepend, heuristic candidate
     // count, etc.) into the PoE so the operator sees what strategies were tried.
@@ -532,12 +618,16 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
               amount: "100000000000000000000", // 100 ETH-equiv default
               suggestedPool: aaveV3PoolFor(input.chainId),
               notes: [
-                "Stub uses anvil_setBalance to grant capital on the fork. For live rescue, deploy " +
-                  "a flash-loan receiver contract that borrows from Aave v3 (or Balancer), runs the drain " +
-                  "plan inside the callback, and forwards profit to escrow.",
+                flashloanReceiverFor(input.chainId)
+                  ? `RECEIVER CONFIGURED: ${flashloanReceiverFor(input.chainId)} — the broadcaster ` +
+                    `can route this PoE through the deployed receiver via executeRescue(...) in v5.`
+                  : "No receiver configured. Stub uses anvil_setBalance to grant capital on the fork; " +
+                    "for live rescue, deploy contracts/rescue/FlashLoanRescue.sol and register the " +
+                    "address in RESCUE_FLASHLOAN_RECEIVER.",
               ],
             }
           : null,
+      safeRequirement,
     });
   } catch (err: any) {
     return finalise({
@@ -1611,6 +1701,8 @@ interface FinaliseArgs {
   approvalVictims?: PoeApprovalVictim[];
   trappedAssets?: PoeTrappedAsset[];
   flashloanRequirement?: PoeArtifact["flashloanRequirement"];
+  /** v4 field */
+  safeRequirement?: PoeArtifact["safeRequirement"];
 }
 
 function finalise(args: FinaliseArgs): PoeArtifact {
@@ -1634,6 +1726,7 @@ function finalise(args: FinaliseArgs): PoeArtifact {
     approvalVictims: args.approvalVictims ?? [],
     trappedAssets: args.trappedAssets ?? [],
     flashloanRequirement: args.flashloanRequirement ?? null,
+    safeRequirement: args.safeRequirement ?? null,
     escrowAddress: DEFAULT_ESCROW.toLowerCase(),
     attackerEoa: ATTACKER_ADDRESS.toLowerCase(),
     verdict: args.verdict,
@@ -1669,7 +1762,8 @@ function finalise(args: FinaliseArgs): PoeArtifact {
     poe.verdict === "true_positive_drained" ||
     poe.verdict === "true_positive_partial" ||
     poe.verdict === "victim_approval_rescue" ||
-    poe.verdict === "requires_flashloan_helper"
+    poe.verdict === "requires_flashloan_helper" ||
+    poe.verdict === "requires_safe_signing"
   ) {
     // Notify asynchronously — never block the prover on a slow webhook.
     void notifyRescueWebhook(poe).catch(() => null);

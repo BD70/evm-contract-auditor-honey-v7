@@ -38,6 +38,8 @@ import { chainMetaByChainId } from "@/src/lib/chain-meta";
 import { anvilPool, rpcRequest } from "../sim/anvil-pool";
 import { sendFromAttacker } from "../sim/evm";
 import { logRescueAction, type PoeArtifact } from "../sim/poe-store";
+import { flashloanReceiverFor } from "../sim/rescue/flashloan-receiver";
+import { buildAbiCalldata, type ArgValue } from "../sim/abi";
 
 export type RescueMode = "dry-run-fork" | "dry-run-sign" | "live";
 
@@ -124,26 +126,52 @@ export async function broadcastRescue(req: RescueRequest): Promise<RescueBroadca
   }
 
   // ---- verdict gate ---------------------------------------------------------
-  // v3: refuse live broadcast for verdicts that aren't safe to broadcast as-is.
+  // v3+v4: refuse live broadcast for verdicts that aren't safe to broadcast as-is.
   if (req.mode === "live") {
-    if (req.poe.verdict === "requires_flashloan_helper") {
+    if (req.poe.verdict === "requires_safe_signing") {
       logRescueAction({
         findingId: req.poe.findingId,
         attemptId: req.poe.attemptId,
         kind: "rescue-failed",
         detail: {
-          reason: "requires-flashloan-helper",
-          flashloanRequirement: req.poe.flashloanRequirement ?? null,
+          reason: "requires-safe-signing",
+          safeRequirement: req.poe.safeRequirement ?? null,
         },
       });
+      const sr = req.poe.safeRequirement;
       return baseResult({
         error:
-          `live broadcast refused: this PoE is verdict='requires_flashloan_helper'. The fork stub ` +
-          `granted the attacker capital with anvil_setBalance — that doesn't work on mainnet. ` +
-          `Deploy a flash-loan receiver contract (Aave v3 pool: ` +
-          `${req.poe.flashloanRequirement?.suggestedPool ?? "n/a for this chain"}) and run the drain ` +
-          `plan inside the callback.`,
+          `live broadcast refused: PoE verdict='requires_safe_signing'. The contract owner is a Safe ` +
+          `multisig (${sr?.safeAddress ?? "?"}, ${sr?.threshold ?? "?"}/${sr?.ownerCount ?? "?"}). ` +
+          `Use the Safe app to propose each drain step to your co-signers:\n` +
+          `  ${sr?.appDeeplink ?? "(no deeplink for this chain)"}`,
       });
+    }
+    if (req.poe.verdict === "requires_flashloan_helper") {
+      // v4: if a receiver address is configured for this chain, we CAN
+      // broadcast — route the drain plan through receiver.executeRescue(...).
+      const receiverAddr = flashloanReceiverFor(req.poe.chainId);
+      if (!receiverAddr) {
+        logRescueAction({
+          findingId: req.poe.findingId,
+          attemptId: req.poe.attemptId,
+          kind: "rescue-failed",
+          detail: {
+            reason: "requires-flashloan-helper",
+            flashloanRequirement: req.poe.flashloanRequirement ?? null,
+          },
+        });
+        return baseResult({
+          error:
+            `live broadcast refused: this PoE is verdict='requires_flashloan_helper'. The fork stub ` +
+            `granted the attacker capital with anvil_setBalance — that doesn't work on mainnet. ` +
+            `Deploy contracts/rescue/FlashLoanRescue.sol with Aave v3 pool ` +
+            `${req.poe.flashloanRequirement?.suggestedPool ?? "(none registered for this chain)"} and ` +
+            `register the deployed address in RESCUE_FLASHLOAN_RECEIVER=${req.poe.chainId}:0x...`,
+        });
+      }
+      // We'll handle the receiver path in liveBroadcast via a special
+      // routing branch (annotated below).
     }
     if (req.poe.verdict === "trapped_assets_only") {
       return baseResult({
@@ -218,7 +246,127 @@ export async function broadcastRescue(req: RescueRequest): Promise<RescueBroadca
   if (req.mode === "dry-run-sign") {
     return await dryRunSign(req.poe, escrow, account!, baseResult);
   }
+  // v4: when PoE is requires_flashloan_helper AND we have a receiver
+  // address for the chain, route the drain plan through the deployed
+  // receiver's executeRescue(...). Otherwise fall through to standard
+  // multi-tx broadcast.
+  if (req.poe.verdict === "requires_flashloan_helper") {
+    const receiver = flashloanReceiverFor(req.poe.chainId);
+    if (receiver) {
+      return await liveFlashloanBroadcast(req.poe, escrow, account!, receiver, baseResult);
+    }
+  }
   return await liveBroadcast(req.poe, escrow, account!, baseResult);
+}
+
+// ---- live flash-loan-receiver broadcast ----------------------------------
+//
+// Encodes a single call to the deployed receiver's executeRescue(asset,
+// amount, targets[], calldatas[], values[], escrow). The receiver borrows
+// from Aave v3, runs the drain plan inside its callback, repays + sweeps
+// surplus to escrow. From our broadcaster's perspective this is exactly
+// ONE tx (with potentially large calldata).
+
+async function liveFlashloanBroadcast(
+  poe: PoeArtifact,
+  escrow: string,
+  account: ReturnType<typeof privateKeyToAccount>,
+  receiver: string,
+  base: (o?: Partial<RescueBroadcastResult>) => RescueBroadcastResult,
+): Promise<RescueBroadcastResult> {
+  const { client, viemChain } = liveClientsFor(poe.chainId);
+  if (!client) return base({ error: "no rpc configured for chain " + poe.chainId });
+  const wallet = createWalletClient({ account, chain: viemChain, transport: http(client.transport.url) });
+  const fl = poe.flashloanRequirement;
+  if (!fl) {
+    return base({ error: "PoE.flashloanRequirement missing — can't build executeRescue call" });
+  }
+  // For v4 the flashloanRequirement.asset is the native symbol; assume the
+  // canonical wrapped-native of the chain. Operators with a different
+  // borrow asset in mind can wire a more specific encoder later.
+  const targets = poe.drainPlan.map((s) => s.to);
+  const calldatas = poe.drainPlan.map((s) => s.data);
+  const values = poe.drainPlan.map((s) => BigInt(s.value));
+  // executeRescue selector + abi-encoded args
+  const args: ArgValue[] = [
+    // For v4, asset/amount are pulled from flashloanRequirement; in v5
+    // we'll resolve this via per-chain WETH lookup. For now we leave it
+    // to the operator's pre-deployed receiver to default to WETH.
+    { kind: "address", value: "0x0000000000000000000000000000000000000000" },
+    { kind: "uint", value: BigInt(fl.amount) },
+    { kind: "address[]", value: targets },
+    { kind: "bytes[]", value: calldatas },
+    { kind: "uint[]", value: values.map((v) => v) },
+    { kind: "address", value: escrow },
+  ];
+  // selector = keccak256("executeRescue(address,uint256,address[],bytes[],uint256[],address)")[:4]
+  // Computed once via viem.toFunctionSelector and pinned here so the broadcaster
+  // doesn't need a runtime hash dep. If the Solidity contract signature
+  // ever changes, update this AND contracts/rescue/FlashLoanRescue.sol.
+  const EXECUTE_RESCUE_SELECTOR = "0xfe5d0181";
+  const data = buildAbiCalldata(EXECUTE_RESCUE_SELECTOR, args);
+  logRescueAction({
+    findingId: poe.findingId,
+    attemptId: poe.attemptId,
+    kind: "rescue-requested",
+    actor: account.address,
+    detail: {
+      mode: "live-flashloan",
+      receiver,
+      flashloanAmount: fl.amount,
+      steps: poe.drainPlan.length,
+    },
+  });
+  try {
+    const nonce = await client.getTransactionCount({ address: account.address, blockTag: "pending" });
+    const fees = await suggestFees(client);
+    const txHash = await (wallet as any).sendTransaction({
+      to: receiver as Hex,
+      data: data as Hex,
+      value: 0n,
+      nonce,
+      ...fees,
+    } as any);
+    const receipt = await client
+      .waitForTransactionReceipt({ hash: txHash as Hex, timeout: 180_000 })
+      .catch(() => null);
+    const ok = receipt?.status === "success";
+    logRescueAction({
+      findingId: poe.findingId,
+      attemptId: poe.attemptId,
+      kind: ok ? "rescue-mined" : "rescue-failed",
+      actor: account.address,
+      detail: { txHash, mode: "live-flashloan", status: receipt?.status ?? "unknown" },
+    });
+    return base({
+      ok,
+      results: [
+        {
+          index: 0,
+          asset: `flash-loan-routed drain (${poe.drainPlan.length} steps)`,
+          txHash,
+          receipt: receipt
+            ? { status: receipt.status, gasUsed: receipt.gasUsed, blockNumber: receipt.blockNumber }
+            : null,
+          error: ok ? null : "executeRescue tx reverted or timed out",
+        },
+      ],
+    });
+  } catch (err: any) {
+    const msg = String(err?.message ?? err).slice(0, 400);
+    logRescueAction({
+      findingId: poe.findingId,
+      attemptId: poe.attemptId,
+      kind: "rescue-failed",
+      actor: account.address,
+      detail: { mode: "live-flashloan", error: msg },
+    });
+    return base({
+      ok: false,
+      error: `liveFlashloanBroadcast error: ${msg}`,
+      results: [],
+    });
+  }
 }
 
 // ---- dry-run-fork ---------------------------------------------------------

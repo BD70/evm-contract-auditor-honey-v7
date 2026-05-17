@@ -43,7 +43,9 @@ export type PoeVerdict =
   // v3 additions:
   | "victim_approval_rescue"        // drainable VICTIMS' approvals (not the contract's funds); broadcaster requires per-victim consent
   | "requires_flashloan_helper"     // economic.* exploit drains on fork given granted capital; live rescue needs a deployed flash-loan receiver
-  | "trapped_assets_only";          // contract holds value but every transfer reverts (paused/blacklisted across the board)
+  | "trapped_assets_only"           // contract holds value but every transfer reverts (paused/blacklisted across the board)
+  // v4 additions:
+  | "requires_safe_signing";        // owner is a Safe multisig; rescue must be PROPOSED through the Safe app, not broadcast directly
 
 export interface PoeAssetRescued {
   /** null = native asset (ETH/BNB/MATIC/…); otherwise lowercased ERC-20 address */
@@ -183,6 +185,18 @@ export interface PoeArtifact {
     amount: string;
     suggestedPool: string | null;
     notes: string[];
+  } | null;
+  /** v4: when verdict='requires_safe_signing', metadata for the Safe app
+   *  deeplink + tx-service endpoint so the operator can propose the drain
+   *  steps as multisig transactions. */
+  safeRequirement?: {
+    safeAddress: string;
+    chainShortName: string | null;
+    threshold: number | null;
+    ownerCount: number | null;
+    appDeeplink: string | null;
+    txServiceEndpoint: string | null;
+    instructions: string[];
   } | null;
 }
 

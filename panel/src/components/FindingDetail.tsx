@@ -983,7 +983,8 @@ interface PoeResp {
       | "error"
       | "victim_approval_rescue"
       | "requires_flashloan_helper"
-      | "trapped_assets_only";
+      | "trapped_assets_only"
+      | "requires_safe_signing";
     blockNumber: number | null;
     rescuedAssets: PoeAsset[];
     drainPlan: PoeStep[];
@@ -1018,6 +1019,15 @@ interface PoeResp {
       amount: string;
       suggestedPool: string | null;
       notes: string[];
+    } | null;
+    safeRequirement?: {
+      safeAddress: string;
+      chainShortName: string | null;
+      threshold: number | null;
+      ownerCount: number | null;
+      appDeeplink: string | null;
+      txServiceEndpoint: string | null;
+      instructions: string[];
     } | null;
   } | null;
   actions: Array<{
@@ -1131,13 +1141,15 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
           ? "purple"
           : poe.verdict === "requires_flashloan_helper"
             ? "blue"
-            : poe.verdict === "trapped_assets_only"
-              ? "yellow"
-              : poe.verdict === "no_rescue_possible"
+            : poe.verdict === "requires_safe_signing"
+              ? "teal"
+              : poe.verdict === "trapped_assets_only"
                 ? "yellow"
-                : poe.verdict === "skipped"
-                  ? "gray"
-                  : "red";
+                : poe.verdict === "no_rescue_possible"
+                  ? "yellow"
+                  : poe.verdict === "skipped"
+                    ? "gray"
+                    : "red";
 
   return (
     <Box border="1px solid" borderColor={`${verdictColor}.muted`} rounded="md" p="4" bg={`${verdictColor}.subtle`}>
@@ -1351,6 +1363,45 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             {poe.flashloanRequirement.notes.map((n, i) => (
               <Text key={i} fontSize="xs" color="fg.muted" mt="1">
                 • {n}
+              </Text>
+            ))}
+          </Box>
+        )}
+
+        {/* v4-Safe: Safe-multisig requirement */}
+        {poe.safeRequirement && (
+          <Box bg="teal.subtle" border="1px solid" borderColor="teal.muted" rounded="md" p="2">
+            <HStack gap="2" mb="1">
+              <Text fontSize="xs" color="teal.fg" textTransform="uppercase" fontWeight="bold">
+                Safe multisig — propose required
+              </Text>
+              {poe.safeRequirement.threshold && poe.safeRequirement.ownerCount && (
+                <Badge colorPalette="teal" size="xs">
+                  {poe.safeRequirement.threshold}/{poe.safeRequirement.ownerCount}
+                </Badge>
+              )}
+            </HStack>
+            <Text fontSize="xs" mb="1">
+              Safe:{" "}
+              <Text as="span" fontFamily="mono">
+                {poe.safeRequirement.safeAddress}
+              </Text>
+            </Text>
+            {poe.safeRequirement.appDeeplink && (
+              <Button
+                as="a"
+                {...({ href: poe.safeRequirement.appDeeplink, target: "_blank", rel: "noreferrer" } as any)}
+                size="xs"
+                colorPalette="teal"
+                variant="solid"
+                mt="1"
+              >
+                Open in Safe app
+              </Button>
+            )}
+            {poe.safeRequirement.instructions.slice(1).map((line, i) => (
+              <Text key={i} fontSize="xs" color="fg.muted" mt="1">
+                {line}
               </Text>
             ))}
           </Box>
