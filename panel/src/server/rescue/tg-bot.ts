@@ -26,6 +26,7 @@
 
 import { loadActionsForFinding, loadLatestPoe, logRescueAction } from "../sim/poe-store";
 import { broadcastRescue } from "./broadcaster";
+import { rawDb } from "@/src/db/client";
 
 const TG_API_BASE = "https://api.telegram.org/bot";
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN ?? "";
@@ -125,6 +126,50 @@ export async function notifyPoe(args: {
     `  /timeline \`${args.findingId}\``,
     `  /rescue \`${args.findingId}\`  (dry-run by default)`,
     `  /forcerescue \`${args.findingId}\` [auth] [steps,...]  — bypass verdict gate, pick steps`,
+  ];
+  return await tgSendMessage(TG_CHAT_ID, lines.join("\n"));
+}
+
+/** Notify TG about approval-surface victims found by rescue-prove.
+ *  Operator can then confirm/reject individual victims via /confirmrescue. */
+export async function notifyApprovalVictims(args: {
+  findingId: string;
+  chainId: number;
+  contractAddress: string;
+  victims: Array<{
+    victim: string;
+    tokenSymbol: string;
+    drainableUsd: number | null;
+    drainable: string;
+  }>;
+  totalDrainableUsd: number | null;
+}): Promise<boolean> {
+  if (!tgBotEnabled() || !TG_CHAT_ID) return false;
+  const usd = args.totalDrainableUsd != null
+    ? `$${args.totalDrainableUsd.toLocaleString("en-US", { maximumFractionDigits: 2 })}`
+    : "unpriced";
+  const victimLines = args.victims.slice(0, 10).map((v) => {
+    const vusd = v.drainableUsd != null ? `$${v.drainableUsd.toFixed(2)}` : "unpriced";
+    return `  • \`${v.victim}\` — ${v.tokenSymbol} ${vusd}`;
+  });
+  if (args.victims.length > 10) {
+    victimLines.push(`  … and ${args.victims.length - 10} more`);
+  }
+  const lines = [
+    `*APPROVAL VICTIMS FOUND*`,
+    `chain: \`${args.chainId}\`   contract: \`${args.contractAddress}\``,
+    `finding: \`${args.findingId}\``,
+    `total at risk: *${usd}*  (${args.victims.length} victim(s))`,
+    ``,
+    `Victims:`,
+    ...victimLines,
+    ``,
+    `To approve rescue after confirming with owner:`,
+    `  /confirmrescue \`${args.findingId}\` \`<victim_addr>\``,
+    `  /confirmrescue \`${args.findingId}\` all`,
+    ``,
+    `To reject:`,
+    `  /rejectrescue \`${args.findingId}\``,
   ];
   return await tgSendMessage(TG_CHAT_ID, lines.join("\n"));
 }
@@ -333,10 +378,75 @@ async function handleUpdate(u: any): Promise<void> {
           .filter(Boolean)
           .join("\n"),
       );
+    } else if (cmd === "/confirmrescue") {
+      const id = parts[1];
+      const victimArg = parts[2]?.toLowerCase();
+      if (!id || !victimArg) {
+        return void tgSendMessage(chatId, "usage: `/confirmrescue <findingId> <victim_addr|all>`");
+      }
+      const poe = loadLatestPoe(id);
+      if (!poe) return void tgSendMessage(chatId, `no PoE for finding \`${id}\``);
+      const victims: string[] =
+        victimArg === "all"
+          ? (poe.approvalVictims ?? []).map((v: any) => v.victim.toLowerCase())
+          : [victimArg];
+      if (victims.length === 0) {
+        return void tgSendMessage(chatId, `no approval victims in PoE \`${id}\``);
+      }
+      const ensureTable = rawDb.prepare(`
+        CREATE TABLE IF NOT EXISTS victim_consents (
+          victim_address TEXT NOT NULL,
+          finding_id TEXT NOT NULL,
+          contract_address TEXT NOT NULL,
+          chain_id INTEGER,
+          consented_by TEXT,
+          consented_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'approved',
+          PRIMARY KEY (victim_address, finding_id)
+        )
+      `);
+      ensureTable.run();
+      const insert = rawDb.prepare(`
+        INSERT OR REPLACE INTO victim_consents
+        (victim_address, finding_id, contract_address, chain_id, consented_by, consented_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'approved')
+      `);
+      let count = 0;
+      for (const v of victims) {
+        insert.run(v, id, poe.contractAddress, poe.chainId, `tg:${sender}`, Date.now());
+        count++;
+      }
+      logRescueAction({
+        findingId: id,
+        attemptId: poe.attemptId,
+        kind: "approval-consent-granted",
+        actor: `tg:${sender}`,
+        detail: { victims, count },
+      });
+      await tgSendMessage(
+        chatId,
+        `Approved ${count} victim(s) for rescue on \`${id}\`.\n` +
+          `Use \`/forcerescue ${id}\` to broadcast.`,
+      );
+    } else if (cmd === "/rejectrescue") {
+      const id = parts[1];
+      if (!id) return void tgSendMessage(chatId, "usage: `/rejectrescue <findingId>`");
+      logRescueAction({
+        findingId: id,
+        attemptId: "manual",
+        kind: "approval-consent-rejected",
+        actor: `tg:${sender}`,
+        detail: { reason: "operator rejected via TG" },
+      });
+      await tgSendMessage(chatId, `Rejected approval rescue for \`${id}\`. No action taken.`);
     } else if (cmd === "/help") {
       await tgSendMessage(
         chatId,
-        "/start · /poe <id> · /timeline <id> · /rescue <id> [auth] · /forcerescue <id> [auth] [steps,...]",
+        [
+          "/start · /poe <id> · /timeline <id>",
+          "/rescue <id> [auth] · /forcerescue <id> [auth] [steps,...]",
+          "/confirmrescue <id> <victim\\_addr|all> · /rejectrescue <id>",
+        ].join("\n"),
       );
     }
   } catch (e: any) {
