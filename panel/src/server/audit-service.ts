@@ -256,14 +256,31 @@ export async function startAudit(input: AuditInput): Promise<StartedAudit> {
       // chain at the live address).
       if (input.chainId && resolved.address) {
         try {
-          const { runEconomicSidecar } = await import("./sim/worker");
+          const { runAllSidecars } = await import("./sim/sidecar");
           const SIDECAR_TIMEOUT_MS = Number(process.env.SIM_SIDECAR_MANUAL_TIMEOUT_MS ?? 25_000);
+          // Build the audit context from the Go output so each sidecar's
+          // cheap gate can fire. This is what unlocks bridge/erc4626/etc.
+          // sidecars on contracts the Go side finds clean — the gate sees
+          // `ERC4626` in global_tags and runs the verifier even though no
+          // primary finding exists.
+          // NOTE: `api` here is the --format api-json output which doesn't
+          // include bytecode_fingerprint / global_tags. Without an audit
+          // context, gated sidecars (e.g. bridge, erc4626-withdraw) run
+          // UNCONDITIONALLY here — each verifier's own early-exit (no
+          // matching selectors → not_exploitable in milliseconds) keeps the
+          // cost bounded. TODO: switch audit-service to `--format json` so
+          // we can pass real fingerprint/tags and apply the gates.
+          const fp = (api?.bytecode_fingerprint ?? {}) as Record<string, unknown>;
+          const tags = Array.isArray(api?.global_tags)
+            ? (api.global_tags as unknown[]).map(String)
+            : [];
           await Promise.race([
-            runEconomicSidecar({
+            runAllSidecars({
               chainId: input.chainId,
               contractAddress: resolved.address,
               bytecodeHash,
               runId,
+              audit: { globalTags: tags, fingerprint: fp, facts: tags },
             }),
             new Promise((resolve) => setTimeout(resolve, SIDECAR_TIMEOUT_MS)),
           ]);

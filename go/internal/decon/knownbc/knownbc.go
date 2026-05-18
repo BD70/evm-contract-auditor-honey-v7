@@ -75,6 +75,26 @@ const (
 	bridgeClaimSelector             = "2e7ba6ef" // claim(uint256,address,uint256,bytes32[])
 	bridgeReceiveMessageSelector    = "46b4a769" // receiveMessage(bytes)
 	bridgeOnMessageReceivedSelector = "34d5386d" // onMessageReceived(address,uint64,bytes)
+
+	// ERC-4626 vault selectors. The semantic-layer detector at
+	// internal/decon/semantic relies on selector→name resolution (which is
+	// disabled in production via --no-resolve), so the vault classification
+	// never fires on real bytecode even for well-known vaults like sDAI.
+	// This is a pure bytecode-substring check — no resolver needed.
+	erc4626AssetSelector          = "38d52e0f" // asset()
+	erc4626TotalAssetsSelector    = "01e1d114" // totalAssets()
+	erc4626ConvertToSharesSel     = "c6e6f592" // convertToShares(uint256)
+	erc4626ConvertToAssetsSel     = "07a2d13a" // convertToAssets(uint256)
+	erc4626MaxDepositSel          = "402d267d" // maxDeposit(address)
+	erc4626PreviewDepositSel      = "ef8b30f7" // previewDeposit(uint256)
+	erc4626DepositSel             = "6e553f65" // deposit(uint256,address)
+	erc4626MintSel                = "94bf804d" // mint(uint256,address)
+	erc4626MaxWithdrawSel         = "ce96cb77" // maxWithdraw(address)
+	erc4626PreviewWithdrawSel     = "0a28a477" // previewWithdraw(uint256)
+	erc4626WithdrawSel            = "b460af94" // withdraw(uint256,address,address)
+	erc4626MaxRedeemSel           = "d905777e" // maxRedeem(address)
+	erc4626PreviewRedeemSel       = "4cdad506" // previewRedeem(uint256)
+	erc4626RedeemSel              = "ba087652" // redeem(uint256,address,address)
 )
 
 // Result mirrors Python BytecodeFingerprint.
@@ -115,6 +135,9 @@ type Result struct {
 
 	HasBridgePattern       bool
 	BridgeSelectorsFound   []string
+
+	HasERC4626Pattern       bool
+	ERC4626SelectorsFound   []string
 }
 
 // Fingerprint analyzes raw bytecode hex for known patterns.
@@ -142,6 +165,7 @@ func Fingerprint(bytecodeHex string) Result {
 	detectReentrancyGuard(bc, &r)
 	detectInitializer(bc, &r)
 	detectBridge(bc, &r)
+	detectERC4626Selectors(bc, &r)
 	classifyProxyType(&r)
 	buildTags(&r)
 	return r
@@ -461,6 +485,51 @@ func detectBridge(bc string, r *Result) {
 	}
 }
 
+// detectERC4626Selectors flags ERC-4626 vault bytecode by raw selector
+// presence. We require ≥4 of the 6 ERC-4626 core selectors (asset, totalAssets,
+// deposit, withdraw, redeem, convertToShares) — the same threshold the
+// semantic-layer detector uses but without depending on selector→name
+// resolution. This works for production runs invoked with --no-resolve.
+func detectERC4626Selectors(bc string, r *Result) {
+	candidates := []struct {
+		sel  string
+		name string
+	}{
+		{erc4626AssetSelector, "asset"},
+		{erc4626TotalAssetsSelector, "totalAssets"},
+		{erc4626ConvertToSharesSel, "convertToShares"},
+		{erc4626ConvertToAssetsSel, "convertToAssets"},
+		{erc4626MaxDepositSel, "maxDeposit"},
+		{erc4626PreviewDepositSel, "previewDeposit"},
+		{erc4626DepositSel, "deposit"},
+		{erc4626MintSel, "mint4626"},
+		{erc4626MaxWithdrawSel, "maxWithdraw"},
+		{erc4626PreviewWithdrawSel, "previewWithdraw"},
+		{erc4626WithdrawSel, "withdraw4626"},
+		{erc4626MaxRedeemSel, "maxRedeem"},
+		{erc4626PreviewRedeemSel, "previewRedeem"},
+		{erc4626RedeemSel, "redeem4626"},
+	}
+	for _, c := range candidates {
+		if strings.Contains(bc, c.sel) {
+			r.ERC4626SelectorsFound = append(r.ERC4626SelectorsFound, c.name)
+		}
+	}
+	// Core six required for vault classification:
+	// asset, totalAssets, deposit, withdraw, redeem, convertToShares
+	// We accept ≥4 since some vaults customise/inline a subset.
+	core := 0
+	for _, n := range r.ERC4626SelectorsFound {
+		switch n {
+		case "asset", "totalAssets", "deposit", "withdraw4626", "redeem4626", "convertToShares":
+			core++
+		}
+	}
+	if core >= 4 {
+		r.HasERC4626Pattern = true
+	}
+}
+
 func classifyProxyType(r *Result) {
 	switch {
 	case r.HasERC1167Clone:
@@ -601,7 +670,10 @@ func buildTags(r *Result) {
 		add("SAFE_ERC20_USAGE", "safeTransfer")
 	}
 	if r.HasBridgePattern {
-		add("BRIDGE_PATTERN", "CROSS_CHAIN_BRIDGE", "bridge_import_surface")
+		add("BRIDGE_PATTERN", "CROSS_CHAIN_BRIDGE", "bridge_import_surface", "bridge_import_surface_present")
+	}
+	if r.HasERC4626Pattern {
+		add("ERC4626", "ERC4626_VAULT", "erc4626_vault_trait", "ERC4626_DEPOSIT_OR_MINT")
 	}
 	allSafe := map[string]bool{
 		"TRANSPARENT_PROXY": true, "UUPS_PROXY": true, "BEACON_PROXY": true,

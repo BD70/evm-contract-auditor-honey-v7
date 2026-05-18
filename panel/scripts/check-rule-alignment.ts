@@ -24,12 +24,30 @@ import { join, resolve } from "node:path";
 const REPO_ROOT = resolve(__dirname, "..", "..");
 const RULES_DIR = join(REPO_ROOT, "rules", "core");
 const VERIFIERS_DIR = join(REPO_ROOT, "panel", "src", "server", "sim", "exploits");
+const SIDECAR_REGISTRY = join(REPO_ROOT, "panel", "src", "server", "sim", "sidecar.ts");
 
-// Rule IDs that are intentionally TS-synthesized (not Go-emitted) — see
-// worker.ts SIDECAR_*_RULE constants and ARCHITECTURE_GUIDE.md.
-const SIDECAR_RULES = new Set<string>([
-  "economic.unguarded_amm_action",
-]);
+// Rule IDs that are intentionally TS-synthesized AND have no canonical Go
+// rule file. These bypass the canonical-rule check. Everything else
+// registered as a sidecar should also have a rules/core/<id>.json so the
+// rest of the pipeline (UI, surface mapping, rescue prove) knows about it.
+//
+// The list is parsed from `panel/src/server/sim/sidecar.ts`'s SIDECARS
+// array so it can't drift out of sync.
+function loadSidecarRuleIds(): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const src = readFileSync(SIDECAR_REGISTRY, "utf8");
+    // The SIDECARS array contains entries like `{ ruleId: "foo.bar", ... }`.
+    // Pull every ruleId literal.
+    for (const m of src.matchAll(/\bruleId:\s*"([A-Za-z_][A-Za-z0-9_.]*)"/g)) {
+      ids.add(m[1]);
+    }
+  } catch {
+    /* missing file means no sidecar bypass — fine */
+  }
+  return ids;
+}
+const SIDECAR_RULES = loadSidecarRuleIds();
 
 function loadGoRuleIds(): Set<string> {
   const ids = new Set<string>();
@@ -85,6 +103,7 @@ function main(): number {
 
   console.log(`Loaded ${go.size} canonical Go rule IDs from ${RULES_DIR}`);
   console.log(`Loaded ${claims.length} verifier file(s) from ${VERIFIERS_DIR}`);
+  console.log(`Loaded ${SIDECAR_RULES.size} sidecar-bypass rule(s) from ${SIDECAR_REGISTRY}`);
   console.log("");
 
   const orphans: Array<{ file: string; ruleId: string }> = [];

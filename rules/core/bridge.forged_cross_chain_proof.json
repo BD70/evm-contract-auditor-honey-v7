@@ -1,44 +1,53 @@
 {
   "schema": "evm-audit.detector.v1",
-  "schema_version": "1.1.0",
+  "schema_version": "1.0.0",
   "rule": {
     "id": "bridge.forged_cross_chain_proof",
-    "internal_name": "forged_cross_chain_proof_injection",
-    "title": "Cross-chain proof verification insufficient — forged import payload can trigger arbitrary transfers",
+    "internal_name": "reference_bridge_forged_cross_chain_proof_v1",
+    "title": "Cross-chain bridge import surface accepts caller-supplied proof without sufficient verification",
     "category": "bridge",
     "severity": "critical",
-    "scope": "contract",
-    "confidence_weight": 0.85
+    "scope": "function",
+    "lifecycle_status": "example",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.78,
+      "with_witness": 0.94,
+      "inconclusive": 0.36
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
   },
   "intent": {
-    "vulnerability_class": "insufficient_verification",
-    "attack_thesis": "The contract implements a cross-chain bridge import/relay surface (submitImports, proveImports, processTransactions, executeMessage, relay, or similar) that accepts an externally-supplied proof payload (Merkle proof, transaction proof, receipt proof, state proof). If the verification of that proof is insufficient — the root is caller-supplied, the proof parser has no domain-binding, or the follow-up execution trusts proven data without re-checking token/amount bounds — an attacker can forge a payload that passes verification and triggers arbitrary asset transfers out of the bridge contract.",
-    "protected_asset_or_effect": "bridge_escrow_balance",
-    "exploit_model": {
-      "attacker": "external_untrusted",
-      "preconditions": [
-        "bridge contract holds escrowed funds",
-        "proof verification does not bind to a trusted on-chain root (or root is manipulable)",
-        "execution phase trusts verified payload fields without independent checks"
-      ],
-      "steps": [
-        "attacker crafts a PartialTransactionProof / receipt proof with fabricated transfer(s)",
-        "attacker calls submitImports / relay / executeMessage with the forged proof",
-        "bridge verification routine (proveImports / verifyProof) passes the payload",
-        "bridge execution routine (processTransactions / executeMessage) executes contained transfers",
-        "escrowed tokens are transferred to the attacker's drainer wallet"
-      ],
-      "impact": "full_drain_of_bridge_escrow"
-    }
+    "vulnerability_class": "bridge_proof_forgery",
+    "attack_thesis": "The contract exposes a cross-chain bridge import/relay surface (submitImports, proveImports, processTransactions, executeMessage, relay, ...) that accepts an externally-supplied proof payload. The proof verification either anchors to a caller-supplied root, lacks domain binding between the proof and the executing chain, or trusts the proven payload during execution without independent token/amount bounds. An attacker can forge a payload that passes verification and triggers arbitrary asset transfers out of the bridge contract.",
+    "protected_asset_or_effect": [
+      "bridge_escrow_balance",
+      "cross_chain_message_integrity"
+    ],
+    "exploit_model": "single_tx_repeatable"
   },
   "requires": {
     "stateful": true,
-    "facts_all": [],
+    "facts_all": [
+      "bridge_import_surface_present",
+      "calldata_proof_argument_present",
+      "proof_root_unbound_or_caller_supplied",
+      "post_verification_asset_transfer_reachable"
+    ],
     "flows_all": [],
     "reachable_effect_any": [
       "asset_transfer",
-      "delegatecall",
-      "call_value_forwarding"
+      "call_value_forwarding",
+      "accounting_mutation"
     ],
     "authorized_path_effect_any": [],
     "economic_effect_any": [],
@@ -47,18 +56,12 @@
         "id": "bridge_import_surface",
         "match": {
           "external_call_surface": {
-            "selector_name_pattern_any": [
-              "submit", "import", "prove", "relay", "execute", "process",
-              "deliver", "claim", "finalize", "receiveMessage", "onMessage"
-            ],
-            "calldata_proof_shape": true,
             "caller_reachability": "external_untrusted",
-            "caller_constraint": "missing_or_weak"
+            "calldata_proof_shape": true
           },
           "reachable_effect_any": [
             "asset_transfer",
-            "call_value_forwarding",
-            "accounting_mutation"
+            "call_value_forwarding"
           ]
         },
         "bind": {
@@ -70,9 +73,12 @@
         "id": "proof_consumption_without_binding",
         "match": {
           "calldata_consumption": {
-            "bytes_or_struct_arg": true,
-            "consumed_by_any": ["hash", "merkle_verify", "ecrecover", "internal_call"],
-            "root_source_any": ["calldata", "storage_mutable", "unbound"],
+            "consumed_by_any": [
+              "hash",
+              "merkle_verify",
+              "ecrecover",
+              "internal_call"
+            ],
             "domain_binding": "absent_or_weak"
           }
         },
@@ -85,74 +91,110 @@
   "counter_evidence": {
     "suppress_if_any": [
       "ADMIN_GUARD",
-      "admin_guarded_function",
-      "STRONG_AUTH_GUARD",
       "TRUSTED_RELAYER_GUARD",
-      "timelock_protected",
       "MULTISIG_GUARD",
-      "BRIDGE_VALIDATOR_SET"
+      "BRIDGE_VALIDATOR_SET",
+      "timelock_protected"
     ],
     "downgrade_if_any": [
       "PAUSABLE_GUARD",
       "nonce_tracked",
       "replay_protection"
     ],
-    "inconclusive_if_any": [],
+    "inconclusive_if_any": [
+      "complex_merkle_verification_unresolved"
+    ],
     "manual_review_if_any": [
-      "complex_merkle_verification"
+      "validator_set_off_chain"
     ]
   },
   "proof": {
-    "min_level": "potential",
-    "preferred_witness": "fork_drain",
-    "acceptable_witnesses": ["fork_drain", "trace_simulation", "symbolic_path"],
+    "min_level": "P4",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "invariant_argument",
+      "deterministic_accounting_witness"
+    ],
     "witness_generation": {
-      "strategy": "forge_proof_and_call",
-      "requires_chain_state": true
+      "native": "bridge_forged_proof_trace",
+      "optional_adapters": []
     }
   },
   "analysis_requirements": {
-    "min_function_coverage": 0.4,
-    "min_storage_role_confidence": 0.5,
-    "min_path_reachability_confidence": 0.5,
-    "max_unknown_action_expression_count": 20,
-    "max_unresolved_selector_count": 15
+    "min_function_coverage": 0.6,
+    "min_storage_role_confidence": 0.6,
+    "min_path_reachability_confidence": 0.6,
+    "max_unknown_action_expression_count": 25,
+    "max_unresolved_selector_count": 15,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
   },
   "fixture_requirements": {
-    "corpus": "bridge.forged_cross_chain_proof",
+    "corpus": "corpus/bridge_forged_proof",
     "positive_fixtures_min": 2,
     "negative_fixtures_min": 2,
-    "inconclusive_fixtures_min": 0,
+    "inconclusive_fixtures_min": 1,
     "required_scenarios": [
-      "forged_merkle_proof_drain",
-      "forged_transaction_proof_drain",
-      "well_guarded_bridge_negative"
+      "forged_merkle_proof_drain_positive",
+      "forged_receipt_proof_drain_positive",
+      "trusted_validator_set_negative",
+      "timelock_protected_bridge_negative",
+      "complex_proof_inconclusive"
     ]
   },
   "reporting": {
-    "title_template": "Bridge import surface `{function}` accepts caller-supplied proof without sufficient verification — potential cross-chain proof forgery",
-    "summary": "Matches bridge contracts with publicly-callable import/relay/execute surfaces that consume bytes/struct proof arguments. Fires when: (1) the proof verification root is caller-supplied or stored in mutable storage without trusted-relayer/validator-set guards, AND (2) the execution phase performs asset_transfer or delegatecall using data derived from the proven payload.",
-    "user_summary": "This bridge contract accepts cross-chain proofs from any caller. If the proof verification is insufficient, an attacker can forge a proof to drain escrowed funds.",
-    "technical_summary": "The detector identifies contracts with bridge-pattern selectors (submit*, prove*, relay*, execute*, process*) that accept bytes/struct calldata arguments consumed by hash/verify paths. It checks whether the Merkle/proof root is derived from a trusted on-chain source (anchor, validator set, L1 state root via precompile) or from caller-supplied data. When the root is untrusted and the post-verification path reaches asset_transfer effects, the finding fires.",
-    "exploit_narrative": "An attacker constructs a PartialTransactionProof containing fabricated transfer instructions. The proof is structured to pass the bridge's verification routine (either because the root itself is caller-controlled, or the proof parser has insufficient domain-binding). Upon successful verification, the bridge's execution layer processes the contained transfers, sending escrowed tokens to the attacker's wallet."
+    "title_template": "Bridge import surface accepts caller-supplied proof without sufficient verification",
+    "summary": "Matches bridge contracts with publicly-callable import/relay/execute surfaces that consume bytes or struct proof arguments. Fires when the proof verification root is caller-supplied or stored in mutable storage without trusted-relayer or validator-set guards AND the execution phase performs asset transfer effects derived from the proven payload.",
+    "user_summary": "This bridge contract accepts cross-chain proofs from any caller. The proof verification can be bypassed with a crafted payload, letting an attacker drain escrowed funds.",
+    "technical_summary": "The detector identifies contracts whose runtime fingerprint contains bridge-pattern selectors (submitImports, proveImports, processTransactions, executeMessage, relay, deliver, finalize, receiveMessage). It checks whether the post-verification path reaches asset_transfer effects using data derived from a caller-supplied bytes/struct argument whose Merkle/proof root is not anchored to a trusted on-chain validator set, anchor contract, or L1 state-root precompile.",
+    "exploit_narrative": "An attacker constructs a PartialTransactionProof or receipt proof containing fabricated transfer instructions. The proof is structured to pass the bridge's verification routine because the root is either caller-controlled, derived from mutable storage updated by an untrusted relayer, or the parser lacks domain binding between proof and chain id. Upon successful verification the bridge's execution layer processes the contained transfers, sending escrowed tokens to the attacker's wallet.",
+    "exploit_preconditions": [
+      "bridge contract holds non-trivial escrowed token balance",
+      "import or relay surface is callable by an external untrusted account",
+      "proof verification root is not anchored to a trusted on-chain source"
+    ],
+    "remediation_hints": [
+      "anchor proof verification to a trusted on-chain validator set or L1 state-root precompile",
+      "add domain binding (chain id, contract address, message nonce) to the proof hash",
+      "enforce per-message nonce or replay protection on processed transfers",
+      "gate processing on a multisig or timelock approval of the relayer set"
+    ],
+    "sarif": {
+      "taxa": [
+        "bridge",
+        "cross_chain"
+      ],
+      "precision": "medium"
+    }
   },
   "witness_goal": {
-    "goal_type": "drain",
+    "goal_type": "multi_tx_exploit",
     "preconditions": [
-      "bridge contract holds token balance > 0",
-      "bridge import/relay surface is externally callable"
+      "bridge contract holds escrowed token balance",
+      "bridge import surface accepts caller-supplied proof"
     ],
     "steps": [
-      "identify the proof structure expected by the verification function",
-      "craft a minimal proof payload that passes verification",
-      "include a transfer instruction targeting the attacker wallet",
-      "call the import/relay surface with the forged proof",
-      "verify token transfer from bridge to attacker"
+      {
+        "actor": "attacker",
+        "action": "craft a minimal proof payload that passes the verification routine",
+        "expected_state": "verification succeeds with attacker-controlled payload"
+      },
+      {
+        "actor": "attacker",
+        "action": "call the import/relay surface with the forged proof",
+        "expected_state": "bridge processes the contained transfers and sends escrowed tokens to the attacker"
+      }
     ],
-    "success_condition": "token_balance_of_bridge_decreased AND token_balance_of_attacker_increased",
-    "environment_requirements": {
-      "chain_fork": true,
-      "block_recent": true
+    "success_condition": "bridge escrow balance decreased and attacker balance increased without legitimate cross-chain origin",
+    "environment_requirements": [
+      "live chain fork at recent block",
+      "non-zero bridge escrow balance"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 1000000
     }
   }
 }
