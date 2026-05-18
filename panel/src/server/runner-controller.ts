@@ -1,5 +1,5 @@
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs";
@@ -112,7 +112,7 @@ export class RunnerController extends EventEmitter {
     this.args = args;
     this.lastError = null;
     this.setStatus("starting");
-    this.clearStaleLock();
+    await this.clearStaleLock();
 
     const flags: string[] = ["runner/src/cli.ts"];
     if (args.once) flags.push("--once");
@@ -258,7 +258,7 @@ export class RunnerController extends EventEmitter {
     await this.start(args ?? this.args ?? {});
   }
 
-  private clearStaleLock() {
+  private async clearStaleLock(): Promise<void> {
     const lockPath = path.join(this.lockDir, ".runner.lock");
     try {
       if (!fs.existsSync(lockPath)) return;
@@ -269,9 +269,12 @@ export class RunnerController extends EventEmitter {
         this.pushLog({ ts: Date.now(), level: "warn", msg: `cleared malformed runner lock at ${lockPath}` });
         return;
       }
+
+      // Lock owner alive? `kill(pid, 0)` throws ESRCH if not.
+      let alive = false;
       try {
         process.kill(owner.pid, 0);
-        // Still alive — leave the lock; runner will fail with a clear error.
+        alive = true;
       } catch (err: any) {
         if (err?.code === "ESRCH") {
           fs.rmSync(lockPath, { force: true });
@@ -280,8 +283,60 @@ export class RunnerController extends EventEmitter {
             level: "warn",
             msg: `cleared stale runner lock (pid ${owner.pid} not running)`,
           });
+          return;
         }
+        if (err?.code === "EPERM") alive = true;
       }
+      if (!alive) return;
+
+      const ourPid = this.proc?.pid;
+      if (ourPid && owner.pid === ourPid) return;
+
+      // Lock owner is alive but NOT our current child. That's an orphan from a
+      // previous panel session (PM2 restart, crash, ulimit OOM) that survived
+      // because we spawn detached. The orphan never releases its lock on its
+      // own, so without reaping the new spawn loops "state directory is
+      // already in use" forever. Verify it's actually one of our runners via
+      // `ps` (matches `runner/src/cli.ts` + `--chain <slug>`) before killing.
+      if (!looksLikeRunnerProcess(owner.pid, this.slug)) {
+        this.pushLog({
+          ts: Date.now(),
+          level: "warn",
+          msg: `lock pid ${owner.pid} is alive but doesn't look like a runner process — leaving lock alone`,
+        });
+        return;
+      }
+
+      this.pushLog({
+        ts: Date.now(),
+        level: "warn",
+        msg: `reaping orphan runner (pid ${owner.pid}, acquiredAt=${owner.acquiredAt}) holding ${lockPath}`,
+      });
+
+      // Kill the process group (runner was spawned detached) so any bun
+      // subprocesses go too. Fall back to per-pid kill if PGID kill fails.
+      const sendSig = (sig: NodeJS.Signals) => {
+        try { process.kill(-owner.pid!, sig); return; } catch {}
+        try { process.kill(owner.pid!, sig); } catch {}
+      };
+      sendSig("SIGTERM");
+      const isDead = () => {
+        try { process.kill(owner.pid!, 0); return false; } catch (e: any) { return e?.code === "ESRCH"; }
+      };
+      const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+      const deadline = Date.now() + 3_000;
+      while (!isDead() && Date.now() < deadline) await sleep(100);
+      if (!isDead()) {
+        sendSig("SIGKILL");
+        const k2 = Date.now() + 1_000;
+        while (!isDead() && Date.now() < k2) await sleep(50);
+      }
+      try { fs.rmSync(lockPath, { force: true }); } catch {}
+      this.pushLog({
+        ts: Date.now(),
+        level: "info",
+        msg: `orphan pid ${owner.pid} reaped; lock cleared`,
+      });
     } catch (err: any) {
       this.pushLog({ ts: Date.now(), level: "warn", msg: `stale-lock check failed: ${err?.message ?? err}` });
     }
@@ -440,3 +495,30 @@ export const runnerController = runnerRegistry.default();
 // Suppress unused import warnings on platforms that tree-shake
 void path;
 void fs;
+
+/**
+ * Best-effort sanity check that `pid` looks like one of OUR runner processes
+ * before we kill it. Reads `ps` for the PID's command line and looks for
+ * `runner/src/cli.ts` and (when slug is provided) the chain slug.
+ *
+ * This is intentionally conservative: if we can't read `ps` or anything looks
+ * off, return false so we leave the foreign process alone and surface the
+ * lock error to the operator.
+ */
+function looksLikeRunnerProcess(pid: number, slug: string): boolean {
+  try {
+    const out = execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+    }).trim();
+    if (!out.includes("runner/src/cli.ts")) return false;
+    // Default (legacy) supervisor doesn't pass --chain; only chain-mode runners do.
+    if (slug && slug !== "default") {
+      return out.includes(`--chain ${slug}`);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
