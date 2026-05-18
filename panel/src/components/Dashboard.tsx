@@ -83,16 +83,38 @@ export function Dashboard() {
   }, []);
 
   // Runner state SSE — keeps `snap` fresh between polls.
+  // Throttled: only update state at most once per second to prevent render storms.
   useEffect(() => {
     const es = new EventSource("/api/runner/stream");
+    let lastUpdate = 0;
+    let pending: any = null;
+    let raf: ReturnType<typeof setTimeout> | null = null;
     const onState = (e: MessageEvent) => {
       try {
-        setSnap(JSON.parse(e.data));
+        const data = JSON.parse(e.data);
+        const now = Date.now();
+        if (now - lastUpdate > 1000) {
+          lastUpdate = now;
+          setSnap(data);
+        } else {
+          pending = data;
+          if (!raf) {
+            raf = setTimeout(() => {
+              raf = null;
+              if (pending) {
+                lastUpdate = Date.now();
+                setSnap(pending);
+                pending = null;
+              }
+            }, 1000);
+          }
+        }
       } catch {}
     };
     es.addEventListener("state", onState);
     return () => {
       es.removeEventListener("state", onState);
+      if (raf) clearTimeout(raf);
       es.close();
     };
   }, []);
@@ -245,7 +267,7 @@ export function Dashboard() {
                 expand →
               </Link>
             </HStack>
-            <LogStream maxHeight="420px" maxLines={50} />
+            <LogStream maxHeight="420px" maxLines={30} />
           </Card>
         </GridItem>
         <GridItem>

@@ -41,3 +41,52 @@ export async function GET(
     actions,
   });
 }
+
+/**
+ * POST /api/proofs/[findingId]
+ *
+ * Re-runs rescue-prove for the given finding. Accepts:
+ *   { force?: boolean, tokens?: string[] }
+ *
+ * When force=true, all value/exposure gates are bypassed — the drain plan
+ * will be attempted regardless of contract balance.
+ *
+ * When tokens is provided, the drain plan will ONLY target those specific
+ * token addresses. Each address is fetched for real-time balance. Use this
+ * to rescue specific tokens even if they weren't in the original exposure scan.
+ */
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ findingId: string }> },
+) {
+  bootOnce();
+  const { findingId } = await params;
+  const f = getFinding(findingId);
+  if (!f) return NextResponse.json({ error: "finding not found" }, { status: 404 });
+  if (!f.contract_address || f.chain_id == null) {
+    return NextResponse.json({ error: "finding has no chain/address context" }, { status: 400 });
+  }
+  let body: any = {};
+  try { body = await req.json(); } catch {}
+  const force = body?.force === true;
+  const tokens: string[] | undefined = Array.isArray(body?.tokens)
+    ? body.tokens.filter((t: any) => typeof t === "string" && /^0x[a-fA-F0-9]{40}$/.test(t))
+    : undefined;
+
+  let evidence: any = {};
+  try {
+    evidence = f.simulation_evidence_json ? JSON.parse(f.simulation_evidence_json) : {};
+  } catch { evidence = {}; }
+
+  const { rescueProve } = await import("@/src/server/sim/rescue-prove");
+  const poe = await rescueProve({
+    findingId: f.id,
+    chainId: f.chain_id,
+    contractAddress: f.contract_address,
+    ruleId: f.rule_id,
+    evidence,
+    force,
+    targetTokens: tokens,
+  });
+  return NextResponse.json({ ok: true, poe });
+}

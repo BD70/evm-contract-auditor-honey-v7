@@ -36,7 +36,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { readChainsRaw } from "../chains-store";
 import { chainMetaByChainId } from "@/src/lib/chain-meta";
 import { anvilPool, rpcRequest } from "../sim/anvil-pool";
-import { sendFromAttacker } from "../sim/evm";
+import { sendFromAttacker, sendFromAddress } from "../sim/evm";
 import { logRescueAction, type PoeArtifact } from "../sim/poe-store";
 import { flashloanReceiverFor } from "../sim/rescue/flashloan-receiver";
 import { buildAbiCalldata, type ArgValue } from "../sim/abi";
@@ -75,10 +75,12 @@ const WRAPPED_NATIVE_BY_CHAIN_BROADCASTER: Record<number, string> = {
   56: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",      // WBNB
   100: "0xe91d153e0b41518a2ce8dd3d7944fa863463a97d",     // WXDAI (Gnosis)
   137: "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",     // WMATIC
+  146: "0x039e2fb66102314ce7b64ce5ce3e5183bc94ad38",     // wS (Sonic)
   1088: "0x75cb093e4d61d2a2e65d8e0bbb01de8d89b53481",    // WMETIS (Metis)
   8453: "0x4200000000000000000000000000000000000006",    // WETH (Base)
   42161: "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",   // WETH (Arb)
   43114: "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",   // WAVAX
+  81457: "0x4300000000000000000000000000000000000004",   // WETH (Blast)
   534352: "0x5300000000000000000000000000000000000004",  // WETH (Scroll)
 };
 
@@ -150,6 +152,16 @@ export async function broadcastRescue(req: RescueRequest): Promise<RescueBroadca
   }
 
   // ---- gate checks ----
+  const MIN_BROADCAST_USD = Number(process.env.RESCUE_MIN_BROADCAST_USD ?? 100);
+  const poeUsd = filteredPoe.totalRescuedUsd ?? filteredPoe.rescuedAssets?.reduce(
+    (sum: number, a: any) => sum + (a.usdValue ?? 0), 0) ?? 0;
+  if (req.mode === "live" && !req.force && poeUsd < MIN_BROADCAST_USD && poeUsd > 0) {
+    return baseResult({
+      error: `value too low for live broadcast: $${poeUsd.toFixed(2)} < minimum $${MIN_BROADCAST_USD}. ` +
+        `Set RESCUE_MIN_BROADCAST_USD to lower the threshold, use force:true, or use dry-run-fork mode.`,
+    });
+  }
+
   if (req.mode === "live") {
     if (!BROADCAST_ENABLED) {
       return baseResult({
@@ -686,7 +698,7 @@ async function liveBroadcast(
     for (const step of poe.drainPlan) {
       try {
         const valueHex = step.value === "0" ? "0x0" : "0x" + BigInt(step.value).toString(16);
-        const { receipt, txHash } = await sendFromAttacker(anv.url, step.to, step.data, {
+        const { receipt, txHash } = await sendFromAddress(anv.url, account.address, step.to, step.data, {
           value: valueHex,
         });
         if (receipt?.status !== "0x1") {

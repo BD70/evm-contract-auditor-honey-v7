@@ -1,0 +1,143 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "access.public_burn_arbitrary_address",
+    "internal_name": "reference_access_public_burn_arbitrary_address_v1",
+    "title": "Public burn(address, uint256) allows anyone to destroy tokens from any holder",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "contract",
+    "lifecycle_status": "active",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.82,
+      "with_witness": 0.95,
+      "inconclusive": 0.35
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unrestricted_token_destruction",
+    "attack_thesis": "The token contract exposes a burn(address, uint256) or burnFrom(address, uint256) function that is callable by anyone without requiring msg.sender == address or an allowance check. An attacker calls burn(LP_pair, amount) to destroy LP tokens, manipulating the AMM price ratio, then swaps to extract the arbitrage profit.",
+    "protected_asset_or_effect": [
+      "token_balance_integrity",
+      "lp_reserve_integrity"
+    ],
+    "exploit_model": "single_tx_exploit"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "UNGUARDED_PUBLIC_BURN"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "msg_sender_guard",
+      "STRONG_AUTH_GUARD",
+      "PROXY_FORWARDING_PATTERN"
+    ],
+    "downgrade_if_any": [],
+    "inconclusive_if_any": [],
+    "manual_review_if_any": []
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "transaction_sequence"
+    ],
+    "witness_generation": {
+      "native": "tag_set_match",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.5,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 30,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/access_public_burn_arbitrary_address",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "unguarded_burn_positive",
+      "allowance_checked_burn_negative",
+      "owner_only_burn_negative"
+    ]
+  },
+  "reporting": {
+    "title_template": "Public burn function allows arbitrary token destruction — LP drain possible",
+    "summary": "Matches token contracts exposing burn(address, uint256) or burnFrom(address, uint256) without msg.sender validation or allowance check, enabling anyone to destroy tokens held by any address.",
+    "user_summary": "This token has a burn function that accepts an arbitrary address parameter and destroys that address's tokens without checking msg.sender or allowances. An attacker can burn LP pair reserves to manipulate the AMM price and drain liquidity.",
+    "technical_summary": "The detector identifies ERC-20 tokens with a public burn(address,uint256) selector (0x9dc29fac) or burnFrom(address,uint256) selector (0x79cc6790) that lacks a msg.sender == address check or ERC-20 allowance verification. Without these guards, any caller can reduce any holder's balance. The primary exploit path is burning the LP pair's token balance to skew reserves, then swapping against the manipulated price to extract value.",
+    "exploit_narrative": "The attacker identifies a DEX LP pair holding the vulnerable token. They call burn(LP_pair_address, large_amount) which destroys the pair's token reserves without touching the other side. The K-invariant is now broken — the token price appears much higher. The attacker swaps a small amount of the token for a disproportionate amount of the quote asset (USDT/WBNB/WETH), draining the LP.",
+    "exploit_preconditions": [
+      "token exposes burn(address, uint256) without auth/allowance checks",
+      "DEX liquidity pair exists holding the vulnerable token",
+      "attacker holds or can acquire some of the token to swap after burning"
+    ],
+    "remediation_hints": [
+      "require msg.sender == account OR sufficient allowance before burning",
+      "use OpenZeppelin's ERC20Burnable which checks _spendAllowance",
+      "restrict burn to onlyOwner if burning from arbitrary addresses is intentional"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "token_manipulation",
+        "amm_exploit"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "burn(address, uint256) is externally callable",
+      "no msg.sender or allowance check on the address parameter"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call burn(LP_pair_address, pair_balance) to destroy the pair's token reserves",
+        "expected_state": "pair reserves skewed — token reserves near zero, quote asset reserves unchanged"
+      },
+      {
+        "actor": "attacker",
+        "action": "swap a small token amount into the pair for disproportionate quote asset output",
+        "expected_state": "attacker receives large amount of quote asset at manipulated price"
+      }
+    ],
+    "success_condition": "attacker profits from price manipulation caused by unauthorized token burn",
+    "environment_requirements": [
+      "DEX LP pair with token reserves"
+    ],
+    "budget_hint": {
+      "max_tx": 2,
+      "max_gas": 500000
+    }
+  }
+}

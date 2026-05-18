@@ -74,8 +74,8 @@ const LEVEL_COLOR: Record<string, string> = {
   debug: "gray", info: "blue", warn: "yellow", error: "red", stderr: "red",
 };
 
-const DEFAULT_MAX_LINES = 500;
-const FLUSH_MS = 250;
+const DEFAULT_MAX_LINES = 200;
+const FLUSH_MS = 500;
 
 export function LogStream({
   maxHeight = "calc(100vh - 260px)",
@@ -125,11 +125,7 @@ export function LogStream({
     return () => es.close();
   }, []);
 
-  useEffect(() => {
-    if (follow && boxRef.current) {
-      boxRef.current.scrollTop = boxRef.current.scrollHeight;
-    }
-  }, [lines, follow]);
+  // follow scroll is handled inside WindowedLogList
 
   // Memoise the filter pipeline. Previously `filtered` was recomputed on
   // every render (including the 4 Hz flush tick), which together with the
@@ -254,7 +250,7 @@ export function LogStream({
         fontSize="xs"
         h={maxHeight}
         overflowY="auto"
-        css={{ scrollbarWidth: "thin" }}
+        css={{ scrollbarWidth: "thin", contain: "strict" }}
       >
         {filtered.length === 0 && (
           <Text color="fg.muted" p="2">
@@ -263,11 +259,58 @@ export function LogStream({
               : "no lines match the current filter"}
           </Text>
         )}
-        {filtered.map((l, i) => (
-          <LogRow key={i} line={l} showChain={isMultiChain && slugFilter === "all"} />
-        ))}
+        <WindowedLogList lines={filtered} showChain={isMultiChain && slugFilter === "all"} containerRef={boxRef} follow={follow} />
       </Box>
     </Stack>
+  );
+}
+
+const ROW_HEIGHT = 28;
+const OVERSCAN = 10;
+
+function WindowedLogList({
+  lines,
+  showChain,
+  containerRef,
+  follow,
+}: {
+  lines: LogLine[];
+  showChain: boolean;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  follow: boolean;
+}) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewH, setViewH] = useState(400);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(() => setViewH(el.clientHeight));
+    obs.observe(el);
+    setViewH(el.clientHeight);
+    const onScroll = () => setScrollTop(el.scrollTop);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => { obs.disconnect(); el.removeEventListener("scroll", onScroll); };
+  }, [containerRef]);
+
+  useEffect(() => {
+    if (follow && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [lines.length, follow, containerRef]);
+
+  const totalH = lines.length * ROW_HEIGHT;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIdx = Math.min(lines.length, Math.ceil((scrollTop + viewH) / ROW_HEIGHT) + OVERSCAN);
+
+  return (
+    <div style={{ height: totalH, position: "relative" }}>
+      <div style={{ position: "absolute", top: startIdx * ROW_HEIGHT, left: 0, right: 0 }}>
+        {lines.slice(startIdx, endIdx).map((l, i) => (
+          <LogRow key={startIdx + i} line={l} showChain={showChain} />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -296,10 +339,12 @@ const LogRow = memo(function LogRow({
 
   return (
     <Box
-      mb="1px"
+      mb="0"
       px="1.5"
       py="0.5"
       borderRadius="sm"
+      h={`${ROW_HEIGHT}px`}
+      overflow="hidden"
       bg={isBad ? (line.level === "warn" ? "yellow.950" : "red.950") : "transparent"}
       _light={{
         bg: isBad ? (line.level === "warn" ? "yellow.50" : "red.50") : "transparent",

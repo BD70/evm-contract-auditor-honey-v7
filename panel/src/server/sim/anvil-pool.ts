@@ -27,10 +27,23 @@ export const RELAYER_ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 // Deterministic probe address. We inject the probe runtime here via
 // `anvil_setCode` on every fresh anvil instance, so verifiers never need to
 // deploy the probe themselves (which used to cost a deploy + receipt + code
-// sanity check, ~3 RPC roundtrips per verification). The runtime is:
-//   33 60 00 55 00   ; CALLER  PUSH1 0  SSTORE  STOP
+// sanity check, ~3 RPC roundtrips per verification). The runtime returns
+// MAX_UINT256 for ANY call (works under both CALL and STATICCALL). This
+// makes it respond to ERC20 view calls (balanceOf, allowance, totalSupply)
+// with a large value, allowing SafeERC20/allowance-gated contracts to
+// proceed past their checks to the actual state-changing call. Witness
+// detection works via findProbeWitness which checks the trace tree for
+// any call TO this address — no SSTORE side-effect needed.
+//
+// Disassembly (40 bytes):
+//   PUSH32 0xFFFF..FF   ; MAX_UINT256
+//   PUSH1 0x00          ; memory offset
+//   MSTORE              ; store at mem[0..32]
+//   PUSH1 0x20          ; return size = 32
+//   PUSH1 0x00          ; return offset
+//   RETURN
 export const PROBE_ADDRESS = "0x000000000000000000000000000000000000bEEF";
-export const PROBE_RUNTIME = "0x3360005500";
+export const PROBE_RUNTIME = "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff60005260206000f3";
 
 // Re-entering probe address used exclusively by the reentrancy verifier. We
 // keep this separate from PROBE_ADDRESS because the re-entering probe has
@@ -95,12 +108,32 @@ class AnvilPool {
   private spawning = new Map<number, Promise<Slot>>();
   private installed: boolean | null = null;
   private shuttingDown = false;
+  private locks = new Map<number, Promise<void>>(); // per-chain mutex
 
   constructor() {
     const shutdown = () => this.shutdown().catch(() => {});
     process.on("exit", shutdown);
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
+  }
+
+  /**
+   * Acquire exclusive access to the chain's Anvil fork. Returns a release
+   * function that MUST be called when done (use try/finally). This prevents
+   * concurrent verifiers and rescue-prove from interleaving txs on the same
+   * fork instance.
+   */
+  async lock(chainId: number): Promise<() => void> {
+    while (this.locks.has(chainId)) {
+      await this.locks.get(chainId);
+    }
+    let release!: () => void;
+    const p = new Promise<void>((r) => { release = r; });
+    this.locks.set(chainId, p);
+    return () => {
+      this.locks.delete(chainId);
+      release();
+    };
   }
 
   /** Returns true if anvil is on PATH (or at ANVIL_BIN); cached after first probe. */

@@ -319,7 +319,13 @@ export async function startAudit(input: AuditInput): Promise<StartedAudit> {
                 r.rule_id &&
                 r.contract_address &&
                 r.chain_id != null &&
-                (r.rule_id.startsWith("call.") || r.rule_id.startsWith("control.unguarded_selfdestruct")),
+                (r.rule_id.startsWith("call.") ||
+                  r.rule_id.startsWith("control.unguarded_selfdestruct") ||
+                  r.rule_id.startsWith("init.") ||
+                  r.rule_id.startsWith("economic.") ||
+                  r.rule_id.startsWith("proxy.") ||
+                  r.rule_id.startsWith("bridge.") ||
+                  r.rule_id === "defi.erc4626.withdraw.missing_caller_authorization"),
             );
             if (eligible.length > 0) {
               const { rescueProve } = await import("./sim/rescue-prove");

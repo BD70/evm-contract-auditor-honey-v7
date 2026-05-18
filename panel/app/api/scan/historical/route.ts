@@ -175,11 +175,20 @@ export async function POST(req: Request) {
       if (runPoE && findingRows.length > 0) {
         for (const f of findingRows) {
           try {
+            // Load full finding JSON to pass evidence for better drain plans
+            const fullRow = rawDb
+              .prepare("SELECT raw_json FROM findings WHERE id = ?")
+              .get(f.id) as { raw_json: string } | undefined;
+            let evidence: any = undefined;
+            if (fullRow?.raw_json) {
+              try { evidence = JSON.parse(fullRow.raw_json); } catch {}
+            }
             const poe = await rescueProve({
               findingId: f.id,
               chainId: target.chainId,
               contractAddress: target.address,
               ruleId: f.rule_id,
+              evidence,
             });
             if (
               poe.verdict === "true_positive_drained" ||

@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "chains": [
+    {
+      "slug": "eth-mainnet",
+      "name": "Ethereum Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 20000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "bsc-mainnet",
+      "name": "BSC Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.bsc.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.bsc.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 40000000,
+      "confirmations": 3
+    },
+    {
+      "slug": "polygon-mainnet",
+      "name": "Polygon Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.matic.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.matic.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 60000000,
+      "confirmations": 3
+    },
+    {
+      "slug": "optimism-mainnet",
+      "name": "Optimism Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.optimism.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.optimism.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 120000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "base-mainnet",
+      "name": "Base Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.base-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.base-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 15000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "arbitrum-mainnet",
+      "name": "Arbitrum Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.arbitrum-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.arbitrum-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 220000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "avalanche-mainnet",
+      "name": "Avalanche C-Chain",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.avalanche-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510/ext/bc/C/rpc/",
+      "rpcWsUrl": "wss://intensive-capable-tent.avalanche-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510/ext/bc/C/ws/",
+      "startBlock": 45000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "blast-mainnet",
+      "name": "Blast Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.blast-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.blast-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 500000,
+      "confirmations": 2
+    },
+    {
+      "slug": "celo-mainnet",
+      "name": "Celo Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.celo-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.celo-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 25000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "zksync-mainnet",
+      "name": "zkSync Era",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.zksync-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.zksync-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 35000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "xai-mainnet",
+      "name": "Xai Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.xai-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.xai-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 1,
+      "confirmations": 2
+    },
+    {
+      "slug": "sonic-mainnet",
+      "name": "Sonic Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.sonic-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.sonic-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 1,
+      "confirmations": 2
+    },
+    {
+      "slug": "linea-mainnet",
+      "name": "Linea Mainnet",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.linea-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.linea-mainnet.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 5000000,
+      "confirmations": 2
+    },
+    {
+      "slug": "gnosis-mainnet",
+      "name": "Gnosis Chain",
+      "enabled": true,
+      "rpcHttpUrl": "https://intensive-capable-tent.xdai.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "rpcWsUrl": "wss://intensive-capable-tent.xdai.quiknode.pro/849a72acb0d272cd61d55ceb1d3a6da165393510",
+      "startBlock": 34000000,
+      "confirmations": 2
+    }
+  ]
+}

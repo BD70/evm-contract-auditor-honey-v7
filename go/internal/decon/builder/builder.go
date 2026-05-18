@@ -288,6 +288,43 @@ func functionTags(art *pipeline.Artifacts, body []int, selector string, cards ma
 		if sstoreBefore && !sstoreAfter {
 			add("SSTORE_BEFORE_CALL_ONLY")
 		}
+
+		// Detect "transfer without source clear" — a function that SLOADs a slot,
+		// makes an external CALL, but the slot driving the transfer is never written
+		// back (zeroed or updated). This is the core bytecode signal for:
+		//   - Double-withdrawal (RSunTokenLocker, DX.app): balance/lock never zeroed
+		//   - Missing guard update (Sareon): payout condition never flipped
+		// To reduce FPs we require that at least one read slot is NEVER written
+		// (not just never zeroed), AND the function writes to OTHER slots (it does
+		// state work but forgets to invalidate the payout source).
+		if (hasCall || hasDelegatecall) && hasSload && hasSstore {
+			readSlots := map[string]struct{}{}
+			writtenSlots := map[string]struct{}{}
+			for _, bid := range body {
+				tr, ok := art.Sim.Traces[bid]
+				if !ok {
+					continue
+				}
+				for _, sop := range tr.StorageOps {
+					key := sop.Slot.String()
+					if sop.OpType == "read" {
+						readSlots[key] = struct{}{}
+					} else if sop.OpType == "write" {
+						writtenSlots[key] = struct{}{}
+					}
+				}
+			}
+			hasUnwrittenRead := false
+			for slot := range readSlots {
+				if _, written := writtenSlots[slot]; !written {
+					hasUnwrittenRead = true
+					break
+				}
+			}
+			if hasUnwrittenRead {
+				add("TRANSFER_WITHOUT_SOURCE_CLEAR")
+			}
+		}
 	}
 
 	card, ok := cards[selector]
@@ -298,6 +335,19 @@ func functionTags(art *pipeline.Artifacts, body []int, selector string, cards ma
 		fnName := strings.ToLower(card.Name)
 		if strings.Contains(fnName, "transfer") {
 			add("asset_transfer")
+		}
+		if strings.HasPrefix(fnName, "burn(address,") || strings.HasPrefix(fnName, "burnfrom(address,") {
+			add("PUBLIC_BURN_SELECTOR")
+			hasBurnGuard := false
+			for _, g := range card.Guards {
+				if g == "msg_sender_guard" {
+					hasBurnGuard = true
+					break
+				}
+			}
+			if !hasBurnGuard {
+				add("UNGUARDED_PUBLIC_BURN")
+			}
 		}
 		if strings.HasPrefix(fnName, "approve(") {
 			add("APPROVE_SELECTOR_EXPOSED")
@@ -323,6 +373,105 @@ func functionTags(art *pipeline.Artifacts, body []int, selector string, cards ma
 			add("OZ_OWNABLE")
 			add("owner_check")
 		}
+
+		// Detect unprotected flashloan/DEX callbacks. These functions MUST validate
+		// msg.sender == pool/router. Without that guard + external calls present,
+		// an attacker can invoke the callback directly with malicious params.
+		if isFlashloanCallback(fnName) || isFlashloanCallbackSelector(selector) {
+			add("FLASHLOAN_CALLBACK")
+			hasMsgSenderGuard := false
+			for _, g := range card.Guards {
+				if g == "msg_sender_guard" {
+					hasMsgSenderGuard = true
+					break
+				}
+			}
+			hasExternalCalls := len(card.ExternalCalls) > 0
+			if !hasMsgSenderGuard && hasExternalCalls {
+				add("UNGUARDED_FLASHLOAN_CALLBACK")
+			}
+		}
+	}
+
+	// Also detect flashloan callback by selector alone (card might not exist or name not resolved)
+	if isFlashloanCallbackSelector(selector) {
+		if _, alreadyTagged := tags["FLASHLOAN_CALLBACK"]; !alreadyTagged {
+			add("FLASHLOAN_CALLBACK")
+		}
+		// For known callback selectors, the absence of msg_sender_guard is the
+		// primary signal. External calls often happen via shared internal routines
+		// (SafeERC20) that the slicer doesn't attribute to this function's body.
+		// We check: (a) no msg_sender branch in this function's trace, AND
+		// (b) contract globally has call/transfer patterns (SAFE_ERC20_USAGE, etc.)
+		hasMsgSenderBranch := false
+		if art.Sim != nil {
+			for _, bid := range body {
+				tr, ok := art.Sim.Traces[bid]
+				if !ok {
+					continue
+				}
+				if tr.BranchCondition != nil {
+					cond := tr.BranchCondition.String()
+					if strings.Contains(cond, "msg.sender") && strings.Contains(cond, "storage[") {
+						hasMsgSenderBranch = true
+					}
+				}
+			}
+		}
+		// Also check if the card has a msg_sender_guard
+		if cardVal, hasCard := cards[selector]; hasCard {
+			for _, g := range cardVal.Guards {
+				if g == "msg_sender_guard" {
+					hasMsgSenderBranch = true
+					break
+				}
+			}
+		}
+		if !hasMsgSenderBranch {
+			add("UNGUARDED_FLASHLOAN_CALLBACK")
+		}
+	}
+
+	// Detect public burn(address, uint256) without access control.
+	// Standard ERC-20 burnFrom requires allowance; a public burn(address,amount)
+	// with no guard lets anyone burn tokens from any address.
+	if isPublicBurnSelector(selector) {
+		add("PUBLIC_BURN_SELECTOR")
+		hasMsgSenderGuard := false
+		if cardVal, hasCard := cards[selector]; hasCard {
+			for _, g := range cardVal.Guards {
+				if g == "msg_sender_guard" {
+					hasMsgSenderGuard = true
+					break
+				}
+			}
+		}
+		if !hasMsgSenderGuard {
+			// Also check from sim traces
+			if art.Sim != nil {
+				for _, bid := range body {
+					tr, ok := art.Sim.Traces[bid]
+					if !ok {
+						continue
+					}
+					if tr.BranchCondition != nil {
+						cond := tr.BranchCondition.String()
+						if strings.Contains(cond, "msg.sender") && strings.Contains(cond, "storage[") {
+							hasMsgSenderGuard = true
+							break
+						}
+						// allowance check: msg.sender compared to a parameter/calldata
+						if strings.Contains(cond, "msg.sender") && strings.Contains(cond, "calldata[") {
+							hasMsgSenderGuard = true
+							break
+						}
+					}
+				}
+			}
+		}
+		if !hasMsgSenderGuard {
+			add("UNGUARDED_PUBLIC_BURN")
+		}
 	}
 
 	// Propagate bytecode fingerprint tags so function-scope rules can use them
@@ -337,6 +486,99 @@ func functionTags(art *pipeline.Artifacts, body []int, selector string, cards ma
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].(string) < out[j].(string) })
 	return out
+}
+
+// isFlashloanCallback returns true when the resolved function name matches a
+// known DeFi flashloan/swap callback that MUST validate msg.sender.
+func isFlashloanCallback(name string) bool {
+	if name == "" {
+		return false
+	}
+	// Aave v2/v3
+	if strings.HasPrefix(name, "executeoperation(") {
+		return true
+	}
+	// Uniswap v2
+	if strings.HasPrefix(name, "uniswapv2call(") {
+		return true
+	}
+	// Uniswap v3 / PancakeSwap v3
+	if strings.Contains(name, "flashcallback(") || strings.Contains(name, "v3flashcallback(") {
+		return true
+	}
+	// Swap callbacks
+	if strings.Contains(name, "swapcallback(") || strings.Contains(name, "v3swapcallback(") {
+		return true
+	}
+	// Generic flash loan callbacks
+	if strings.HasPrefix(name, "onflashloan(") {
+		return true
+	}
+	// Morpho
+	if strings.HasPrefix(name, "onmorphoflashloan(") ||
+		strings.HasPrefix(name, "onmorphorepay(") ||
+		strings.HasPrefix(name, "onmorphosupply(") {
+		return true
+	}
+	// dYdX
+	if strings.HasPrefix(name, "callfunctionwitharg(") || strings.HasPrefix(name, "callfunction(") {
+		return true
+	}
+	// Balancer
+	if strings.HasPrefix(name, "receiveflashloan(") {
+		return true
+	}
+	// Euler
+	if strings.HasPrefix(name, "ondefer(") {
+		return true
+	}
+	return false
+}
+
+// isFlashloanCallbackSelector checks by raw 4-byte selector when name
+// resolution failed.
+func isFlashloanCallbackSelector(sel string) bool {
+	switch sel {
+	case "0x920f5c84": // executeOperation(address,uint256[],uint256[],bytes) — Aave v3
+		return true
+	case "0x1b11d0ff": // executeOperation(address,uint256,uint256,bytes) — Aave v2
+		return true
+	case "0x10d1e85c": // uniswapV2Call(address,uint256,uint256,bytes)
+		return true
+	case "0xe9cbafb0": // uniswapV3FlashCallback(uint256,uint256,bytes)
+		return true
+	case "0x23a69e75": // pancakeV3FlashCallback(uint256,uint256,bytes)
+		return true
+	case "0x5cffe9de": // onFlashLoan(address,address,uint256,uint256,bytes) — ERC-3156
+		return true
+	case "0xf04f2707": // receiveFlashLoan(address[],uint256[],uint256[],bytes) — Balancer
+		return true
+	case "0x31f57072": // onMorphoFlashLoan(uint256,bytes) — Morpho
+		return true
+	case "0xd9d98ce4": // onMorphoRepay(uint256,bytes) — Morpho
+		return true
+	case "0x2520e7ff": // onMorphoSupply(uint256,bytes) — Morpho
+		return true
+	case "0xfa461e33": // uniswapV3SwapCallback(int256,int256,bytes)
+		return true
+	case "0x84800812": // pancakeV3SwapCallback(int256,int256,bytes)
+		return true
+	}
+	return false
+}
+
+// isPublicBurnSelector returns true for selectors of burn(address,uint256)
+// and burnFrom(address,uint256) — functions that destroy tokens from an
+// arbitrary address. In standard ERC-20, burnFrom checks allowance, but
+// vulnerable tokens expose burn(address,uint256) without any auth.
+func isPublicBurnSelector(sel string) bool {
+	switch sel {
+	case "0x9dc29fac": // burn(address,uint256)
+		return true
+	case "0x79cc6790": // burnFrom(address,uint256)
+		return true
+	}
+	return false
 }
 
 // erc4626WithdrawTags ports audit_json._erc4626_tags: derive caller-auth /

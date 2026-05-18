@@ -60,10 +60,17 @@ export async function POST(req: Request) {
   if (!row.contractAddress || row.chainId == null) {
     return NextResponse.json({ status: "skipped", reason: "missing contract address / chainId" });
   }
+  // Load raw finding JSON for witness selector extraction
+  let evidence: unknown;
+  try {
+    const raw = rawDb.prepare("SELECT raw_json FROM findings WHERE id = ?").get(findingId) as { raw_json?: string } | undefined;
+    if (raw?.raw_json) evidence = JSON.parse(raw.raw_json);
+  } catch {}
   const result = await verifyFinding({
     chainId: row.chainId,
     contractAddress: row.contractAddress,
     ruleId: row.ruleId,
+    evidence,
   });
   const engineInfo = engineForRule(row.ruleId) ?? { engine: result.engine, version: result.engineVersion };
   rawDb
@@ -135,7 +142,12 @@ export async function POST(req: Request) {
       row.ruleId.startsWith("control.unguarded_selfdestruct") ||
       row.ruleId.startsWith("init.") ||
       row.ruleId.startsWith("economic.") ||
-      row.ruleId.startsWith("proxy.")) &&
+      row.ruleId.startsWith("proxy.") ||
+      row.ruleId.startsWith("bridge.") ||
+      row.ruleId.startsWith("oracle.") ||
+      row.ruleId.startsWith("logic.") ||
+      row.ruleId.startsWith("access.") ||
+      row.ruleId === "defi.erc4626.withdraw.missing_caller_authorization") &&
     String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() !== "false";
   if (rescueEligible) {
     try {

@@ -55,7 +55,10 @@
       "two_step_acceptance_by_new_admin",
       "COMPOUND_UNITROLLER",
       "GNOSIS_SAFE_PROXY",
-      "EIP2535_DIAMOND"
+      "EIP2535_DIAMOND",
+      "TRANSPARENT_PROXY",
+      "proxy_admin_guard",
+      "KNOWN_SAFE_PROXY_PATTERN"
     ],
     "downgrade_if_any": [
       "OZ_OWNABLE",

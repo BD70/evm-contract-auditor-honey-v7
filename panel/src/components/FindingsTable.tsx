@@ -459,7 +459,7 @@ const FindingRow = memo(
 // throttled to at most one per `SSE_REFETCH_THROTTLE_MS` so a runner that
 // fires 50 findings/sec doesn't translate into 50 react re-renders/sec.
 const SEARCH_DEBOUNCE_MS = 300;
-const SSE_REFETCH_THROTTLE_MS = 2000;
+const SSE_REFETCH_THROTTLE_MS = 8000;
 
 export function FindingsTable() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -482,6 +482,7 @@ export function FindingsTable() {
   // are right above the table — one click each to widen the view.
   const [simFilter, setSimFilter] = useState<string[]>(["verified"]);
   const [hideAdminOnly, setHideAdminOnly] = useState(true);
+  const [groupByContract, setGroupByContract] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -524,16 +525,16 @@ export function FindingsTable() {
   // changes a filter mid-flight, the stale response can't overwrite the
   // fresh state.
   const fetchPage = useCallback(async (q: string, signal: AbortSignal) => {
-    setLoading(true);
+    if (!signal.aborted) setLoading(true);
     setError(null);
     try {
       const r = await fetch(`/api/findings?${q}`, { signal });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       if (signal.aborted) return;
-      setRows(j.rows ?? []);
+      const newRows: Row[] = j.rows ?? [];
+      setRows(newRows);
       setTotal(j.total ?? 0);
-      // Reset (don't merge) exposures so we never accumulate cruft.
       setExposures({});
     } catch (err: any) {
       if (err?.name === "AbortError") return;
@@ -718,6 +719,15 @@ export function FindingsTable() {
         >
           {hideAdminOnly ? "admin hidden" : "show all"}
         </Button>
+        <Button
+          size="xs"
+          variant={groupByContract ? "solid" : "subtle"}
+          colorPalette="teal"
+          onClick={() => setGroupByContract((v) => !v)}
+          title="Group findings by contract address — shows one row per contract with all vulnerabilities"
+        >
+          {groupByContract ? "grouped" : "flat"}
+        </Button>
         <HStack gap="2" ml="auto">
           {loading && (
             <Text fontSize="xs" color="fg.muted">
@@ -742,53 +752,169 @@ export function FindingsTable() {
         <Table.Root size="sm">
           <Table.Header>
             <Table.Row>
-              <Table.ColumnHeader>Severity</Table.ColumnHeader>
-              <Table.ColumnHeader>Title</Table.ColumnHeader>
-              <Table.ColumnHeader>Rule</Table.ColumnHeader>
-              <Table.ColumnHeader>Contract</Table.ColumnHeader>
-              <Table.ColumnHeader>Verdict</Table.ColumnHeader>
-              <Table.ColumnHeader>Exposure</Table.ColumnHeader>
-              <Table.ColumnHeader>Chain</Table.ColumnHeader>
-              <Table.ColumnHeader>Block</Table.ColumnHeader>
-              <Table.ColumnHeader>When</Table.ColumnHeader>
-              <Table.ColumnHeader>Source</Table.ColumnHeader>
-              <Table.ColumnHeader>Judge</Table.ColumnHeader>
+              {groupByContract ? (
+                <>
+                  <Table.ColumnHeader>Contract</Table.ColumnHeader>
+                  <Table.ColumnHeader>Chain</Table.ColumnHeader>
+                  <Table.ColumnHeader>Vulnerabilities</Table.ColumnHeader>
+                  <Table.ColumnHeader>Top Verdict</Table.ColumnHeader>
+                  <Table.ColumnHeader>Exposure</Table.ColumnHeader>
+                  <Table.ColumnHeader>When</Table.ColumnHeader>
+                </>
+              ) : (
+                <>
+                  <Table.ColumnHeader>Severity</Table.ColumnHeader>
+                  <Table.ColumnHeader>Title</Table.ColumnHeader>
+                  <Table.ColumnHeader>Rule</Table.ColumnHeader>
+                  <Table.ColumnHeader>Contract</Table.ColumnHeader>
+                  <Table.ColumnHeader>Verdict</Table.ColumnHeader>
+                  <Table.ColumnHeader>Exposure</Table.ColumnHeader>
+                  <Table.ColumnHeader>Chain</Table.ColumnHeader>
+                  <Table.ColumnHeader>Block</Table.ColumnHeader>
+                  <Table.ColumnHeader>When</Table.ColumnHeader>
+                  <Table.ColumnHeader>Source</Table.ColumnHeader>
+                  <Table.ColumnHeader>Judge</Table.ColumnHeader>
+                </>
+              )}
             </Table.Row>
           </Table.Header>
           <Table.Body>
-            {rows
-              .filter((r) => {
-                if (!hideAdminOnly) return true;
-                return r.simulationAttackerKind !== "owner" && r.poeAttackerKind !== "owner";
-              })
-              .map((r) => {
-              const ek = exposureKey(r.chainId, r.contractAddress);
-              return (
-                <FindingRow
-                  key={r.id}
-                  row={r}
-                  exposure={ek ? exposures[ek] : undefined}
-                  exposureLoading={exposureLoading}
-                />
-              );
-            })}
-            {rows.length === 0 && !loading && (
-              <Table.Row>
-                <Table.Cell colSpan={11}>
-                  <Text fontSize="sm" color="fg.muted" textAlign="center" py="6">
-                    {error ? "could not load findings — check the panel logs" : "no findings match"}
-                  </Text>
-                </Table.Cell>
-              </Table.Row>
-            )}
-            {rows.length === 0 && loading && (
-              <Table.Row>
-                <Table.Cell colSpan={11}>
-                  <Text fontSize="sm" color="fg.muted" textAlign="center" py="6">
-                    loading…
-                  </Text>
-                </Table.Cell>
-              </Table.Row>
+            {groupByContract ? (
+              (() => {
+                const filtered = rows.filter((r) => {
+                  if (!hideAdminOnly) return true;
+                  return r.simulationAttackerKind !== "owner" && r.poeAttackerKind !== "owner";
+                });
+                const groups = new Map<string, Row[]>();
+                for (const r of filtered) {
+                  const key = r.contractAddress
+                    ? `${r.chainId ?? 0}:${r.contractAddress.toLowerCase()}`
+                    : r.id;
+                  if (!groups.has(key)) groups.set(key, []);
+                  groups.get(key)!.push(r);
+                }
+                const entries = [...groups.values()].sort(
+                  (a, b) => Math.max(...b.map((r) => r.discoveredAt)) - Math.max(...a.map((r) => r.discoveredAt)),
+                );
+                if (entries.length === 0 && !loading) {
+                  return (
+                    <Table.Row>
+                      <Table.Cell colSpan={6}>
+                        <Text fontSize="sm" color="fg.muted" textAlign="center" py="6">
+                          {error ? "could not load findings — check the panel logs" : "no findings match"}
+                        </Text>
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                }
+                return entries.map((group) => {
+                  const rep = group[0];
+                  const ek = exposureKey(rep.chainId, rep.contractAddress);
+                  const sev = group.reduce((best, r) => {
+                    const order = ["critical", "high", "medium", "low", "info"];
+                    return order.indexOf(r.severity) < order.indexOf(best) ? r.severity : best;
+                  }, "info");
+                  const hasDrainable = group.some(
+                    (r) => r.poeVerdict === "true_positive_drained" || r.poeVerdict === "true_positive_partial",
+                  );
+                  const hasVerified = group.some((r) => r.simulationStatus === "verified");
+                  return (
+                    <Table.Row
+                      key={ek ?? rep.id}
+                      cursor="pointer"
+                      _hover={{ bg: "bg.muted" }}
+                      onClick={() => { window.location.href = `/findings/${rep.id}`; }}
+                    >
+                      <Table.Cell>
+                        <ContractAddressCell chainId={rep.chainId} address={rep.contractAddress} />
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Text fontSize="xs">{chainName(rep.chainId)}</Text>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <HStack gap="1" wrap="wrap">
+                          {group.slice(0, 4).map((r) => (
+                            <Badge
+                              key={r.id}
+                              size="xs"
+                              variant="subtle"
+                              colorPalette={SEVERITY_COLORS[r.severity] ?? "gray"}
+                              title={r.title ?? r.ruleId}
+                            >
+                              {r.ruleId.split(".").pop()}
+                            </Badge>
+                          ))}
+                          {group.length > 4 && (
+                            <Badge size="xs" variant="outline" colorPalette="gray">
+                              +{group.length - 4}
+                            </Badge>
+                          )}
+                        </HStack>
+                      </Table.Cell>
+                      <Table.Cell>
+                        {hasDrainable ? (
+                          <Badge size="xs" variant="solid" colorPalette="red">drainable</Badge>
+                        ) : hasVerified ? (
+                          <Badge size="xs" variant="outline" colorPalette="red">exploitable</Badge>
+                        ) : (
+                          <Badge size="xs" variant="subtle" colorPalette="gray">
+                            {group.length} finding{group.length > 1 ? "s" : ""}
+                          </Badge>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell>
+                        <ExposureCell
+                          exp={ek ? exposures[ek] : undefined}
+                          loading={exposureLoading}
+                          surface="both"
+                        />
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Text fontSize="xs" color="fg.muted">
+                          {fmtAge(Math.max(...group.map((r) => r.discoveredAt)))}
+                        </Text>
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                });
+              })()
+            ) : (
+              <>
+                {rows
+                  .filter((r) => {
+                    if (!hideAdminOnly) return true;
+                    return r.simulationAttackerKind !== "owner" && r.poeAttackerKind !== "owner";
+                  })
+                  .map((r) => {
+                    const ek = exposureKey(r.chainId, r.contractAddress);
+                    return (
+                      <FindingRow
+                        key={r.id}
+                        row={r}
+                        exposure={ek ? exposures[ek] : undefined}
+                        exposureLoading={exposureLoading}
+                      />
+                    );
+                  })}
+                {rows.length === 0 && !loading && (
+                  <Table.Row>
+                    <Table.Cell colSpan={11}>
+                      <Text fontSize="sm" color="fg.muted" textAlign="center" py="6">
+                        {error ? "could not load findings — check the panel logs" : "no findings match"}
+                      </Text>
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+                {rows.length === 0 && loading && (
+                  <Table.Row>
+                    <Table.Cell colSpan={11}>
+                      <Text fontSize="sm" color="fg.muted" textAlign="center" py="6">
+                        loading…
+                      </Text>
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+              </>
             )}
           </Table.Body>
         </Table.Root>

@@ -18,6 +18,9 @@ export interface VerifyInput {
   /** Optional precomputed runtime bytecode for the target. When omitted, the
    * driver fetches it via eth_getCode against the fork. */
   bytecodeHex?: string;
+  /** Raw Go analyzer finding JSON; passed to extractWitnessSelector for
+   * identifying the vulnerable function selector. */
+  evidence?: unknown;
 }
 
 export interface VerifyResult {

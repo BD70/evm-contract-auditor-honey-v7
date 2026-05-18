@@ -1,0 +1,141 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "access.unprotected_flashloan_callback",
+    "internal_name": "reference_access_unprotected_flashloan_callback_v1",
+    "title": "Flashloan/swap callback lacks msg.sender validation — direct invocation drains approved tokens",
+    "category": "access_control",
+    "severity": "critical",
+    "scope": "contract",
+    "lifecycle_status": "active",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.80,
+      "with_witness": 0.95,
+      "inconclusive": 0.35
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "unprotected_callback_direct_invocation",
+    "attack_thesis": "A flashloan or DEX swap callback function (executeOperation, uniswapV2Call, etc.) is externally callable without verifying that msg.sender is the legitimate lending pool or DEX pair. An attacker calls the callback directly with crafted parameters, causing the contract to transfer or approve tokens on behalf of users who delegated allowances.",
+    "protected_asset_or_effect": [
+      "asset_transfer_authorization",
+      "token_approval_safety"
+    ],
+    "exploit_model": "single_tx_exploit"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "UNGUARDED_FLASHLOAN_CALLBACK"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "msg_sender_guard",
+      "REENTRANCY_GUARD",
+      "PROXY_FORWARDING_PATTERN",
+      "STRONG_AUTH_GUARD"
+    ],
+    "downgrade_if_any": [],
+    "inconclusive_if_any": [],
+    "manual_review_if_any": []
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "reachable_path",
+    "acceptable_witnesses": [
+      "reachable_path",
+      "transaction_sequence"
+    ],
+    "witness_generation": {
+      "native": "tag_set_match",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.7,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.5,
+    "max_unknown_action_expression_count": 30,
+    "max_unresolved_selector_count": 20,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/access_unprotected_flashloan_callback",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "unguarded_callback_positive",
+      "guarded_callback_negative",
+      "no_callback_negative"
+    ]
+  },
+  "reporting": {
+    "title_template": "Unprotected flashloan callback enables direct token drain",
+    "summary": "Matches contracts exposing a flashloan/swap callback selector (executeOperation, uniswapV2Call, flashCallback, etc.) that makes external calls (token transfers/approvals) without validating msg.sender against the legitimate pool or router address.",
+    "user_summary": "This contract has a flashloan callback function that anyone can call directly. The function transfers or approves tokens without checking that the caller is the legitimate lending pool. An attacker can invoke the callback with crafted parameters to drain tokens that users have approved to this contract.",
+    "technical_summary": "The detector identifies contracts with known DeFi callback selectors (Aave executeOperation, Uniswap V2/V3 flash callbacks, ERC-3156 onFlashLoan, Balancer receiveFlashLoan) that lack msg.sender validation. When the callback contains CALL opcodes (token transfers) without a branch condition comparing msg.sender to a stored pool address, an attacker can bypass the flash loan mechanism entirely and invoke the callback directly to execute arbitrary token operations using the contract's existing approvals.",
+    "exploit_narrative": "The attacker identifies that users have approved tokens to the vulnerable contract (e.g., via a legitimate DeFi operation). The attacker then calls the flashloan callback function directly (without going through the lending pool), passing crafted parameters that cause the contract to transfer the approved tokens to the attacker. Since the callback never checks that msg.sender is the pool, the call succeeds.",
+    "exploit_preconditions": [
+      "contract exposes a flashloan/swap callback selector",
+      "callback does not validate msg.sender == lending_pool/router",
+      "callback performs token transfers or approvals based on callback parameters",
+      "victims have approved tokens to the vulnerable contract"
+    ],
+    "remediation_hints": [
+      "validate msg.sender == LENDING_POOL at the start of every callback",
+      "store the pool address immutably (constructor or constant)",
+      "use OpenZeppelin's FlashLoanSimpleReceiverBase which enforces this check",
+      "never trust callback parameters for token routing without sender validation"
+    ],
+    "sarif": {
+      "taxa": [
+        "access_control",
+        "flashloan",
+        "callback_abuse"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "single_tx_exploit",
+    "preconditions": [
+      "flashloan callback selector is externally reachable",
+      "no msg.sender == pool check"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call the flashloan callback directly with crafted asset/amount/params; callback executes token transfer using existing approvals",
+        "expected_state": "approved tokens transferred to attacker without going through the lending pool"
+      }
+    ],
+    "success_condition": "attacker receives tokens that were approved to the vulnerable contract by other users",
+    "environment_requirements": [
+      "existing token approvals to the vulnerable contract"
+    ],
+    "budget_hint": {
+      "max_tx": 1,
+      "max_gas": 500000
+    }
+  }
+}

@@ -50,7 +50,7 @@ export interface RunnerSnapshot {
 // log lines pinned in panel-process memory, contributing to the Node-OOM /
 // pm2-restart cycle that made AVAX (largest backlog) look like it was
 // "crashing". 2_000 lines × 14 chains ≈ 8 MB worst-case.
-const BUF_SIZE = 2_000;
+const BUF_SIZE = 500;
 const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? 9090);
 
 export class RunnerController extends EventEmitter {

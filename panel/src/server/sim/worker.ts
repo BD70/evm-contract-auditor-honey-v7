@@ -73,6 +73,9 @@ function rescueProveEligible(ruleId: string): boolean {
     ruleId.startsWith("economic.") ||
     ruleId.startsWith("proxy.") ||
     ruleId.startsWith("bridge.") ||
+    ruleId.startsWith("oracle.") ||
+    ruleId.startsWith("logic.") ||
+    ruleId.startsWith("access.") ||
     ruleId === "defi.erc4626.withdraw.missing_caller_authorization"
   );
 }
@@ -111,6 +114,7 @@ const MIN_SEVERITIES = (process.env.SIM_SEVERITIES ?? "critical,high")
 // targets get verified first.
 const REQUIRE_EXPOSURE = (process.env.SIM_REQUIRE_EXPOSURE ?? "true").toLowerCase() !== "false";
 const EXPOSURE_GRACE_ON_ERROR = (process.env.SIM_EXPOSURE_GRACE_ON_ERROR ?? "true").toLowerCase() !== "false";
+const MIN_EXPOSURE_USD = Number(process.env.SIM_MIN_EXPOSURE_USD ?? 50);
 
 type Globals = { __simWorker?: SimWorker };
 
@@ -493,11 +497,19 @@ class SimWorker {
 
     this.stats.inFlight++;
     let result: VerifyResult;
+    const unlock = await anvilPool.lock(first.chain_id!);
     try {
+      // Load raw finding JSON so the verifier can extract witness selectors
+      let evidence: unknown;
+      try {
+        const raw = rawDb.prepare("SELECT raw_json FROM findings WHERE id = ?").get(first.id) as { raw_json?: string } | undefined;
+        if (raw?.raw_json) evidence = JSON.parse(raw.raw_json);
+      } catch {}
       result = await verifyFinding({
         chainId: first.chain_id!,
         contractAddress: first.contract_address!,
         ruleId: first.rule_id,
+        evidence,
       });
     } catch (err: any) {
       result = {
@@ -515,6 +527,7 @@ class SimWorker {
       };
       this.stats.lastError = String(err?.message ?? err);
     } finally {
+      unlock();
       this.stats.inFlight--;
     }
 
@@ -677,14 +690,14 @@ function hasRelevantExposure(exp: Exposure, surface: ExposureSurface): boolean {
   const hasNative = Boolean(exp.nativeWei && exp.nativeWei !== "0");
   const hasToken =
     Array.isArray(exp.tokens) && exp.tokens.some((t) => t.balance && t.balance !== "0");
-  switch (surface) {
-    case "native":
-      return hasNative;
-    case "token":
-      return hasToken;
-    case "both":
-      return hasNative || hasToken;
+  const hasBalance = surface === "native" ? hasNative :
+                     surface === "token" ? hasToken :
+                     hasNative || hasToken;
+  if (!hasBalance) return false;
+  if (MIN_EXPOSURE_USD > 0 && exp.totalUsdValue != null && exp.totalUsdValue < MIN_EXPOSURE_USD) {
+    return false;
   }
+  return true;
 }
 
 /**

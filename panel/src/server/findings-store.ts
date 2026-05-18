@@ -61,10 +61,14 @@ function isUnreachableDeadCodeNoise(f: any): boolean {
     (fn && (fn.name || fn.selector)) ||
     affected.some((a: any) => a && (a.name || a.selector));
   if (hasNamedFn) return false;
+  // Only suppress findings where the STEP-level id (not the internal
+  // call-site id from the Go analyzer) is explicitly "unreachable:*".
+  // The call.id field uses "unreachable:" as an internal bytecode-offset
+  // label — it does NOT mean the finding is dead code.
   const steps = Array.isArray(f?.witness?.steps) ? f.witness.steps : [];
   if (steps.length === 0) return false;
   const allUnreachable = steps.every((s: any) => {
-    const cid = s?.call?.id ?? s?.id ?? "";
+    const cid = s?.id ?? "";
     return typeof cid === "string" && cid.startsWith("unreachable:");
   });
   return allUnreachable;
@@ -82,6 +86,7 @@ export function ingestApiJson(apiJson: any, ctx: IngestContext): { ids: string[]
       judged_by, judge_verdict, judge_rationale, judge_confidence, affected_functions_json, raw_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const existsStmt = rawDb.prepare(`SELECT id FROM findings WHERE id = ?`);
 
   for (const f of findings) {
     if (isUnreachableDeadCodeNoise(f)) {
@@ -89,6 +94,7 @@ export function ingestApiJson(apiJson: any, ctx: IngestContext): { ids: string[]
       continue;
     }
     const id = findingId(f, ctx);
+    const existed = existsStmt.get(id);
     const affected = f.affected_functions ?? (f.function ? [f.function] : []);
     insert.run(
       id,
@@ -115,15 +121,20 @@ export function ingestApiJson(apiJson: any, ctx: IngestContext): { ids: string[]
       JSON.stringify(f),
     );
     ids.push(id);
-    const evt: FindingEvent = {
-      id,
-      ruleId: f.rule_id ?? "unknown",
-      severity: f.severity ?? "unknown",
-      title: f.title ?? f.reporting?.user_summary ?? null,
-      source: ctx.source,
-      discoveredAt: now,
-    };
-    eventBus.emit("findings:new", evt);
+    // Only fire the SSE event for genuinely NEW findings — not re-ingested
+    // duplicates. This prevents the UI from refreshing on every scan cycle
+    // when the same contract is re-analyzed.
+    if (!existed) {
+      const evt: FindingEvent = {
+        id,
+        ruleId: f.rule_id ?? "unknown",
+        severity: f.severity ?? "unknown",
+        title: f.title ?? f.reporting?.user_summary ?? null,
+        source: ctx.source,
+        discoveredAt: now,
+      };
+      eventBus.emit("findings:new", evt);
+    }
   }
   if (dropped > 0 && process.env.PANEL_DEBUG_INGEST === "1") {
     console.info(`[ingest] dropped ${dropped} unreachable-deadcode noise finding(s)`);

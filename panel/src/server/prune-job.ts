@@ -65,6 +65,29 @@ export function runPrune(retention: Partial<RetentionDays> = {}, opts: { vacuum?
     .prepare(`DELETE FROM findings WHERE source = 'runner' AND discovered_at < ?`)
     .run(findingsCutoff).changes) as number;
 
+  // Aggressive cleanup: drop FP/skipped runner findings older than 3 days
+  // These are the 90%+ bulk of DB rows and have zero operational value
+  const fpCutoff = now - ms(3);
+  result.findings += (rawDb
+    .prepare(
+      `DELETE FROM findings WHERE source = 'runner'
+       AND simulation_status IN ('not_exploitable', 'skipped')
+       AND discovered_at < ?`,
+    )
+    .run(fpCutoff).changes) as number;
+
+  // Even more aggressive: unverified (NULL status) runner findings older than
+  // 1 day with medium/low severity — these never get simulated anyway
+  const unverifiedCutoff = now - ms(1);
+  result.findings += (rawDb
+    .prepare(
+      `DELETE FROM findings WHERE source = 'runner'
+       AND simulation_status IS NULL
+       AND severity IN ('medium', 'low', 'info')
+       AND discovered_at < ?`,
+    )
+    .run(unverifiedCutoff).changes) as number;
+
   // Audit runs: drop completed manual + runner rows older than cutoff. Never
   // delete a row that is still 'running' (would orphan the SSE stream).
   const runsCutoff = now - ms(r.auditRuns);

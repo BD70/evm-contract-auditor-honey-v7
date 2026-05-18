@@ -52,7 +52,7 @@ const RULE_SURFACE: Record<string, ExposureSurface> = {
   // token balances depending on what the contract does. Default to both.
   "reentrancy.classic_mutex_absent": "both",
   "reentrancy.cross_function": "both",
-  "reentrancy.read_only": "both",
+  "reentrancy.read_only_exposure": "both",
 
   // --- access-control / ownership escalation: total takeover, both surfaces.
   "access.ownership_transfer_unguarded": "both",

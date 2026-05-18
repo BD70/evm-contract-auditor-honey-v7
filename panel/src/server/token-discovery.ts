@@ -23,7 +23,9 @@ import { getTokenMetadata, type TokenMetadata } from "./token-metadata";
 
 const DISCOVERY_WINDOW_BLOCKS = Number(process.env.EXPOSURE_DISCOVERY_WINDOW ?? 5_000_000);
 const HOLDINGS_TTL_MS = Number(process.env.EXPOSURE_HOLDINGS_TTL_MS ?? 30 * 60_000);
-const MAX_TOKENS_PER_CONTRACT = Number(process.env.EXPOSURE_MAX_TOKENS_PER_CONTRACT ?? 40);
+const MAX_TOKENS_PER_CONTRACT = Number(process.env.EXPOSURE_MAX_TOKENS_PER_CONTRACT ?? 200);
+const LOG_CHUNK_SIZE = Number(process.env.EXPOSURE_LOG_CHUNK_SIZE ?? 10_000);
+const MAX_LOG_CHUNKS = 10;
 
 const TOPIC_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
@@ -148,35 +150,67 @@ export async function discoverHoldings(
     }
   }
 
-  // 2. ONE eth_getLogs call. Topic[2] = padded contract address (recipient).
-  const logsRes = await rpcSingle<Array<{ address: string; blockNumber: string }>>(rpcUrl, "eth_getLogs", [
-    {
-      fromBlock: "0x" + fromBlock.toString(16),
-      toBlock: "latest",
-      topics: [TOPIC_TRANSFER, null, addressToTopic(contract)],
-    },
-  ]);
-
-  if (!logsRes.ok || !Array.isArray(logsRes.value)) {
-    // Persist an empty sentinel so we don't keep retrying every refresh —
-    // this typically fires when an RPC rejects unbounded eth_getLogs.
+  // 2. Chunked eth_getLogs. RPCs often reject large ranges (10M+ blocks,
+  //    or responses > 10K logs). We try the full range first; if it fails,
+  //    chunk backwards from `latest` in LOG_CHUNK_SIZE slices.
+  const headRes = await rpcSingle<string>(rpcUrl, "eth_blockNumber", []);
+  const headBlock = headRes.ok && headRes.value ? Number(BigInt(headRes.value)) : null;
+  if (headBlock == null) {
     writeCache(chainId, contract, [], null);
     return { holdings: [], fromBlock, cached: false, scannedChunks: 0, source: "log-scan" };
   }
 
-  // 3. Deduplicate token addresses (capped).
   const unique = new Set<string>();
   let lastBlock: number | null = null;
-  for (const log of logsRes.value) {
-    if (!log?.address) continue;
-    unique.add(log.address.toLowerCase());
-    if (log.blockNumber) lastBlock = Number(BigInt(log.blockNumber));
-    if (unique.size >= MAX_TOKENS_PER_CONTRACT) break;
+  let scannedChunks = 0;
+
+  async function scanRange(from: number, to: number): Promise<boolean> {
+    const logsRes = await rpcSingle<Array<{ address: string; blockNumber: string }>>(rpcUrl, "eth_getLogs", [
+      {
+        fromBlock: "0x" + from.toString(16),
+        toBlock: "0x" + to.toString(16),
+        topics: [TOPIC_TRANSFER, null, addressToTopic(contract)],
+      },
+    ], 30_000);
+    scannedChunks++;
+    if (!logsRes.ok || !Array.isArray(logsRes.value)) return false;
+    for (const log of logsRes.value) {
+      if (!log?.address) continue;
+      unique.add(log.address.toLowerCase());
+      if (log.blockNumber) lastBlock = Number(BigInt(log.blockNumber));
+      if (unique.size >= MAX_TOKENS_PER_CONTRACT) break;
+    }
+    return true;
   }
+
+  // Try full range first (works when RPC has no block-range limit)
+  let fullRangeOk = await scanRange(fromBlock, headBlock);
+  if (!fullRangeOk) {
+    // Full range rejected. Scan most-recent blocks first (highest value).
+    // Most tokens with actual balances will have recent transfers.
+    unique.clear();
+    lastBlock = null;
+    let to = headBlock;
+    for (let i = 0; i < MAX_LOG_CHUNKS && unique.size < MAX_TOKENS_PER_CONTRACT; i++) {
+      const chunkFrom = Math.max(fromBlock, to - LOG_CHUNK_SIZE);
+      const ok = await scanRange(chunkFrom, to);
+      if (!ok) {
+        console.warn(`[token-discovery] chunk ${i} failed: from=${chunkFrom} to=${to} contract=${contract}`);
+        break;
+      }
+      // If we found tokens in first chunk, that's usually sufficient —
+      // most active tokens have recent transfers. Stop early unless we
+      // need more coverage.
+      if (unique.size > 0 && i >= 2) break;
+      if (chunkFrom <= fromBlock) break;
+      to = chunkFrom - 1;
+    }
+  }
+  console.info(`[token-discovery] ${contract} fullRangeOk=${fullRangeOk} unique=${unique.size} chunks=${scannedChunks}`);
 
   if (unique.size === 0) {
     writeCache(chainId, contract, [], lastBlock);
-    return { holdings: [], fromBlock, cached: false, scannedChunks: 1, source: "log-scan" };
+    return { holdings: [], fromBlock, cached: false, scannedChunks, source: "log-scan" };
   }
 
   // 4. Batched balanceOf for each unique token.
@@ -197,7 +231,7 @@ export async function discoverHoldings(
 
   if (nonZero.length === 0) {
     writeCache(chainId, contract, [], lastBlock);
-    return { holdings: [], fromBlock, cached: false, scannedChunks: 1, source: "log-scan" };
+    return { holdings: [], fromBlock, cached: false, scannedChunks, source: "log-scan" };
   }
 
   // 5. Fetch metadata (cached forever).
@@ -213,7 +247,7 @@ export async function discoverHoldings(
     .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1));
 
   writeCache(chainId, contract, holdings, lastBlock);
-  return { holdings, fromBlock, cached: false, scannedChunks: 1, source: "log-scan" };
+  return { holdings, fromBlock, cached: false, scannedChunks, source: "log-scan" };
 }
 
 /** Used by /api/exposure/refresh to manually invalidate the cache. */

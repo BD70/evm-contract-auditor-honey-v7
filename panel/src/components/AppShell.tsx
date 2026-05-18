@@ -19,6 +19,7 @@ import {
   LuSettings,
   LuScrollText,
   LuNetwork,
+  LuScanSearch,
 } from "react-icons/lu";
 import { ColorModeButton } from "./ui/color-mode";
 import { RunnerPill } from "./RunnerPill";
@@ -26,6 +27,7 @@ import { RunnerPill } from "./RunnerPill";
 const NAV = [
   { href: "/", label: "Dashboard", icon: LuGauge },
   { href: "/findings", label: "Findings", icon: LuBug },
+  { href: "/scan", label: "Scan", icon: LuScanSearch },
   { href: "/test", label: "Test", icon: LuPlay },
   { href: "/rules", label: "Rules", icon: LuScrollText },
   { href: "/chains", label: "Chains", icon: LuNetwork },

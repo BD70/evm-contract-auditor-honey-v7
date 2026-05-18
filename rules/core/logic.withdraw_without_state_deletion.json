@@ -1,0 +1,170 @@
+{
+  "schema": "evm-audit.detector.v1",
+  "schema_version": "1.0.0",
+  "rule": {
+    "id": "logic.withdraw_without_state_deletion",
+    "internal_name": "reference_logic_withdraw_without_state_deletion_v1",
+    "title": "Withdrawal function does not clear source record, enabling double-spend via replay",
+    "category": "logic",
+    "severity": "critical",
+    "scope": "function",
+    "lifecycle_status": "active",
+    "default_status": "probable_vulnerability",
+    "confidence_policy": {
+      "base": 0.72,
+      "with_witness": 0.92,
+      "inconclusive": 0.35
+    },
+    "confidence_cap_policy": "min_required_input",
+    "required_confidence_inputs": [
+      "function_coverage",
+      "storage_role_confidence",
+      "path_reachability_confidence"
+    ],
+    "disallow_primary_evidence": [
+      "function_name",
+      "selector"
+    ]
+  },
+  "intent": {
+    "vulnerability_class": "state_invalidation_missing",
+    "attack_thesis": "A withdrawal/claim function reads a balance or lock entry from storage, transfers tokens/ETH based on that value, but never zeroes/deletes the source slot. An attacker can call the function repeatedly (or via flash-loan in the same tx) to drain the contract by replaying the same uncancelled record.",
+    "protected_asset_or_effect": [
+      "asset_transfer_authorization",
+      "state_integrity",
+      "balance_accounting"
+    ],
+    "exploit_model": "single_tx_repeatable"
+  },
+  "requires": {
+    "stateful": false,
+    "facts_all": [
+      "TRANSFER_WITHOUT_SOURCE_CLEAR",
+      "EXTERNAL_CALL_OBSERVED",
+      "state_read"
+    ],
+    "flows_all": [],
+    "reachable_effect_any": [
+      "asset_transfer",
+      "accounting_mutation"
+    ],
+    "authorized_path_effect_any": [],
+    "economic_effect_any": [],
+    "sequence": []
+  },
+  "counter_evidence": {
+    "suppress_if_any": [
+      "REENTRANCY_GUARD",
+      "OZ_REENTRANCY_GUARD",
+      "nonReentrant",
+      "mutex_lock",
+      "reentrancy_guard",
+      "PROXY_FORWARDING_PATTERN",
+      "ADMIN_GUARD",
+      "admin_guarded_function"
+    ],
+    "downgrade_if_any": [
+      "msg_sender_guard",
+      "owner_check",
+      "AUTH_GUARDED",
+      "authorization_guard",
+      "STRONG_AUTH_GUARD"
+    ],
+    "inconclusive_if_any": [
+      "ambiguous_call_ordering"
+    ],
+    "manual_review_if_any": []
+  },
+  "proof": {
+    "min_level": "P4",
+    "preferred_witness": "transaction_sequence",
+    "acceptable_witnesses": [
+      "transaction_sequence",
+      "reachable_path",
+      "invariant_argument"
+    ],
+    "witness_generation": {
+      "native": "double_call_replay",
+      "optional_adapters": []
+    }
+  },
+  "analysis_requirements": {
+    "min_function_coverage": 0.7,
+    "min_storage_role_confidence": 0.5,
+    "min_path_reachability_confidence": 0.6,
+    "max_unknown_action_expression_count": 20,
+    "max_unresolved_selector_count": 15,
+    "max_unresolved_paths": 10,
+    "require_no_unmodeled_terminators": false,
+    "require_usable_primary_evidence": true
+  },
+  "fixture_requirements": {
+    "corpus": "corpus/logic_withdraw_without_state_deletion",
+    "positive_fixtures_min": 2,
+    "negative_fixtures_min": 2,
+    "inconclusive_fixtures_min": 1,
+    "required_scenarios": [
+      "double_withdraw_positive",
+      "flash_loan_replay_positive",
+      "proper_delete_negative",
+      "reentrancy_guard_negative",
+      "low_coverage_inconclusive"
+    ]
+  },
+  "reporting": {
+    "title_template": "Withdrawal does not invalidate source record — double-spend possible",
+    "summary": "Matches functions that transfer assets based on a storage record (lock, balance, claim) but never zero/delete the record after payout, allowing the same record to be replayed for multiple withdrawals.",
+    "user_summary": "This function pays out tokens or ETH based on a stored record (such as a lock or claim entry) but does not delete or zero the record after the transfer. An attacker can call this function repeatedly to withdraw the same funds multiple times, draining the contract.",
+    "technical_summary": "The detector identifies functions where: (1) an SLOAD reads a storage slot containing an amount or record, (2) the value drives an external CALL that transfers assets, and (3) no SSTORE of zero is written back to the originating slot. Without deletion, the record remains valid for subsequent calls. This pattern was exploited in the RSunTokenLocker (BSC, 2026-03-14) and DX.app token locks.",
+    "exploit_narrative": "The attacker creates a lock/deposit with a short or zero duration, waits for it to expire, then calls withdrawTokens() repeatedly. Each call reads the intact lock record, passes the owner check, and transfers the full amount — because the record is never deleted. With a flash loan, the attacker can amplify by depositing, withdrawing twice (or more), and repaying in a single transaction.",
+    "exploit_preconditions": [
+      "a function reads a storage record (balance, lock, claim) via SLOAD",
+      "the function transfers assets based on that record value",
+      "the function does NOT zero or delete the storage record after transfer",
+      "no reentrancy guard prevents repeated calls in the same transaction"
+    ],
+    "remediation_hints": [
+      "delete or zero the storage record (amount, owner) BEFORE making the external transfer",
+      "use the checks-effects-interactions pattern: update state before calls",
+      "add a reentrancy guard as defense-in-depth",
+      "use a 'claimed' boolean flag set before transfer if deletion is impractical"
+    ],
+    "sarif": {
+      "taxa": [
+        "logic_error",
+        "state_management",
+        "double_spend"
+      ],
+      "precision": "high"
+    }
+  },
+  "witness_goal": {
+    "goal_type": "multi_call_exploit",
+    "preconditions": [
+      "storage record exists with nonzero amount",
+      "function reads record and transfers based on it",
+      "record is NOT zeroed after transfer"
+    ],
+    "steps": [
+      {
+        "actor": "attacker",
+        "action": "call withdraw function with valid lock/record index; observe transfer succeeds",
+        "expected_state": "record remains nonzero in storage after first withdrawal"
+      },
+      {
+        "actor": "attacker",
+        "action": "call same withdraw function again with same index; observe transfer succeeds again",
+        "expected_state": "double withdrawal confirmed; contract balance decreased by 2x"
+      }
+    ],
+    "success_condition": "attacker receives more than their deposited amount by replaying the same uncancelled record",
+    "environment_requirements": [
+      "valid existing record (may be created by attacker via deposit/lock)",
+      "record must be in withdrawable state (e.g. expired lock)"
+    ],
+    "budget_hint": {
+      "max_tx": 3,
+      "max_gas": 3000000
+    }
+  }
+}

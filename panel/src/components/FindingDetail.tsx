@@ -1079,6 +1079,8 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
   const [forceMode, setForceMode] = useState(false);
   const [selectedSteps, setSelectedSteps] = useState<Set<number> | null>(null);
   const [showStepPicker, setShowStepPicker] = useState(false);
+  const [targetTokenInput, setTargetTokenInput] = useState("");
+  const [tokenRescueBusy, setTokenRescueBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1123,6 +1125,42 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
       setRescueResult(`re-analyze error: ${String(e?.message ?? e)}`);
     } finally {
       setReanalyzeBusy(false);
+    }
+  };
+
+  const runTokenRescue = async () => {
+    const raw = targetTokenInput.trim();
+    if (!raw) return;
+    const tokens = raw.split(/[\s,;]+/).filter((t) => /^0x[a-fA-F0-9]{40}$/.test(t));
+    if (tokens.length === 0) {
+      setRescueResult("No valid token addresses provided (expected 0x... format, 40 hex chars)");
+      return;
+    }
+    setTokenRescueBusy(true);
+    setRescueResult(null);
+    try {
+      const r = await fetch(`/api/proofs/${findingId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true, tokens }),
+      });
+      const j = await r.json();
+      if (j.error) {
+        setRescueResult(`token rescue error: ${j.error}`);
+      } else {
+        const poeResult = j.poe;
+        const verdict = poeResult?.verdict ?? "?";
+        const plan = poeResult?.drainPlan ?? [];
+        const succeeded = plan.filter((s: any) => s.success).length;
+        setRescueResult(
+          `Token rescue: ${verdict} — ${succeeded}/${plan.length} step(s) succeeded for ${tokens.length} token(s)`,
+        );
+      }
+      await refresh();
+    } catch (e: any) {
+      setRescueResult(`token rescue error: ${String(e?.message ?? e)}`);
+    } finally {
+      setTokenRescueBusy(false);
     }
   };
 
@@ -1196,7 +1234,15 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
     // wired but hasn't run for this finding (and why, when we can tell).
     const eligible =
       data.finding.ruleId.startsWith("call.") ||
-      data.finding.ruleId.startsWith("control.unguarded_selfdestruct");
+      data.finding.ruleId.startsWith("control.unguarded_selfdestruct") ||
+      data.finding.ruleId.startsWith("init.") ||
+      data.finding.ruleId.startsWith("economic.") ||
+      data.finding.ruleId.startsWith("proxy.") ||
+      data.finding.ruleId.startsWith("bridge.") ||
+      data.finding.ruleId.startsWith("oracle.") ||
+      data.finding.ruleId.startsWith("logic.") ||
+      data.finding.ruleId.startsWith("access.") ||
+      data.finding.ruleId === "defi.erc4626.withdraw.missing_caller_authorization";
     if (!eligible) return null;
     return (
       <Box border="1px solid" borderColor="border.muted" rounded="md" p="3" bg="bg.subtle">
@@ -1664,6 +1710,49 @@ function ProofOfExploitPanel({ findingId }: { findingId: string }) {
             escrow: <Text as="span" fontFamily="mono">{shortHash(poe.escrowAddress)}</Text>
           </Text>
         </HStack>
+
+        {/* Token-specific rescue: allows operator to specify exact token(s) to attempt */}
+        <Box
+          border="1px solid"
+          borderColor="border.muted"
+          rounded="md"
+          p="2"
+          bg="bg.subtle"
+        >
+          <Text fontSize="xs" fontWeight="medium" mb="1">Rescue specific token(s)</Text>
+          <HStack gap="2" wrap="wrap">
+            <input
+              type="text"
+              value={targetTokenInput}
+              onChange={(e) => setTargetTokenInput((e.target as HTMLInputElement).value)}
+              placeholder="0xTokenAddr1, 0xTokenAddr2, ..."
+              style={{
+                flex: 1,
+                minWidth: "220px",
+                fontSize: "12px",
+                padding: "4px 8px",
+                border: "1px solid var(--chakra-colors-border-muted)",
+                borderRadius: "4px",
+                fontFamily: "monospace",
+                background: "var(--chakra-colors-bg-canvas)",
+              }}
+            />
+            <Button
+              size="xs"
+              colorPalette="blue"
+              variant="outline"
+              onClick={runTokenRescue}
+              loading={tokenRescueBusy}
+              disabled={tokenRescueBusy || !targetTokenInput.trim()}
+              title="Fetch real-time balances for specified tokens and attempt rescue (force mode)"
+            >
+              Rescue these tokens
+            </Button>
+          </HStack>
+          <Text fontSize="2xs" color="fg.muted" mt="1">
+            Paste one or more ERC-20 token addresses (comma/space separated). Will fetch live balance and attempt drain regardless of exposure scan results.
+          </Text>
+        </Box>
 
         {rescueResult && (
           <Text

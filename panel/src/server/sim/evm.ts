@@ -64,6 +64,27 @@ export async function sendFromRelayer(
   return { txHash, receipt };
 }
 
+export async function sendFromAddress(
+  url: string,
+  from: string,
+  to: string,
+  calldata: string,
+  opts: { value?: string; gas?: string } = {},
+): Promise<{ txHash: string; receipt: Receipt | null }> {
+  await rpcRequest(url, "anvil_impersonateAccount", [from]).catch(() => null);
+  await rpcRequest(url, "anvil_setBalance", [from, "0x" + (10n ** 19n).toString(16)]).catch(() => null);
+  const tx = {
+    from,
+    to,
+    data: calldata,
+    gas: opts.gas ?? "0x500000",
+    value: opts.value ?? "0x0",
+  };
+  const txHash = await rpcRequest<string>(url, "eth_sendTransaction", [tx]);
+  const receipt = await waitForReceipt(url, txHash).catch(() => null);
+  return { txHash, receipt };
+}
+
 export async function deployBytecode(url: string, creationBytecodeHex: string): Promise<string> {
   const tx = {
     from: ATTACKER_ADDRESS,

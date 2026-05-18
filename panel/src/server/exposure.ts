@@ -86,6 +86,11 @@ function rpcUrlForChain(chainId: number): { url: string; meta: ChainMeta } | nul
   return { url: entry.rpcHttpUrl, meta };
 }
 
+/** Public wrapper for rescue-prove to resolve RPC URL by chain ID. */
+export function rpcUrlForChainPublic(chainId: number): string | null {
+  return rpcUrlForChain(chainId)?.url ?? null;
+}
+
 async function rpcCall<T>(url: string, method: string, params: unknown[]): Promise<T> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), RPC_TIMEOUT_MS);
@@ -183,6 +188,8 @@ async function fetchExposureOne(chainId: number, address: string): Promise<Expos
       //          Token and NFT API add-on at marketplace.quicknode.com"
       // We also pattern-match the message so we catch future variants without
       // a code (e.g. plain 4xx replies wrapped as a generic error).
+      // Additionally, an AbortError (timeout) means the API is probably not
+      // enabled — don't waste 8s on every contract for nothing.
       const msg = String(err?.message ?? err);
       if (
         err?.code === -32601 ||
@@ -191,7 +198,9 @@ async function fetchExposureOne(chainId: number, address: string): Promise<Expos
         /method not (found|allowed)/i.test(msg) ||
         /is not enabled/i.test(msg) ||
         /not (?:available|supported)/i.test(msg) ||
-        /add[- ]on/i.test(msg)
+        /add[- ]on/i.test(msg) ||
+        /abort/i.test(msg) ||
+        /timeout/i.test(msg)
       ) {
         unsupportedHosts.add(host);
       }
