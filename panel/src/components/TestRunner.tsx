@@ -72,6 +72,8 @@ function simBadgePalette(s: string | null, attackerKind: "any" | "owner" | null 
   return SIM_BADGE_COLOR[s ?? ""] ?? "purple";
 }
 
+const MAX_PROGRESS = 500;
+
 export function TestRunner() {
   const [input, setInput] = useState<InputValue | null>(null);
   const [llmJudge, setLlmJudge] = useState(false);
@@ -104,7 +106,16 @@ export function TestRunner() {
     esRef.current = es;
     es.addEventListener("progress", (e: MessageEvent) => {
       try {
-        setProgress((p) => [...p, JSON.parse(e.data)]);
+        const evt = JSON.parse(e.data);
+        setProgress((p) => {
+          // Cap progress buffer at MAX_PROGRESS events. A pathological audit
+          // (e.g. mass-decode of a huge factory) can emit thousands of
+          // events and unbounded growth here was a contributor to the
+          // browser tab going unresponsive after long sessions.
+          const next = p.length < MAX_PROGRESS ? p : p.slice(-MAX_PROGRESS + 1);
+          next.push(evt);
+          return next;
+        });
       } catch {}
     });
     es.addEventListener("done", (e: MessageEvent) => {

@@ -15,12 +15,27 @@ const DEFAULTS: RetentionDays = {
   webhooks: Number(process.env.PANEL_RETENTION_WEBHOOKS_DAYS ?? 14),
 };
 
+// Pending deployments retention is separate (and aggressive) because the
+// runners firehose `deployment.json` events into the DB at thousands per
+// hour, each with ~7 KB of raw_json. Without an active deployments->audit
+// consumer (none today; manual audits only) the table grows by ~500 MB/day.
+// We apply TWO bounds and keep the tighter one:
+//   - age: drop rows older than this window (default 1h)
+//   - count: keep at most this many rows total (oldest-first eviction)
+// The count cap is the safety net for sustained high ingest rates where
+// age-only pruning can't keep up.
+const PENDING_DEPLOYMENTS_MAX_AGE_MS =
+  Number(process.env.PANEL_RETENTION_PENDING_DEPLOYMENTS_HOURS ?? 1) * 60 * 60 * 1000;
+const PENDING_DEPLOYMENTS_MAX_ROWS =
+  Number(process.env.PANEL_RETENTION_PENDING_DEPLOYMENTS_MAX ?? 5_000);
+
 export interface PruneResult {
   findings: number;
   auditRuns: number;
   lifecycle: number;
   webhooks: number;
   deployments: number;
+  pendingDeployments: number;
   vacuumed: boolean;
   ts: number;
 }
@@ -38,6 +53,7 @@ export function runPrune(retention: Partial<RetentionDays> = {}, opts: { vacuum?
     lifecycle: 0,
     webhooks: 0,
     deployments: 0,
+    pendingDeployments: 0,
     vacuumed: false,
     ts: now,
   };
@@ -77,6 +93,41 @@ export function runPrune(retention: Partial<RetentionDays> = {}, opts: { vacuum?
        AND detected_at < ?`,
     )
     .run(now - ms(r.auditRuns)).changes) as number;
+
+  // Pending deployments: drop rows that have been sitting unaudited for too
+  // long, AND cap total count. The runner ingests thousands/hour; without
+  // this the table grew unbounded (496 MB / 77K rows on 2026-05-18) and
+  // `SELECT * FROM deployments` calls would materialise hundreds of MB into
+  // JS heap and OOM the panel.
+  const ageDeleted = (rawDb
+    .prepare(
+      `DELETE FROM deployments
+        WHERE audit_status = 'pending'
+          AND detected_at < ?`,
+    )
+    .run(now - PENDING_DEPLOYMENTS_MAX_AGE_MS).changes) as number;
+
+  // Size cap (after age prune so we count what's left). Oldest-first eviction
+  // via subquery so we never accidentally drop a freshly-ingested row.
+  const remaining = (rawDb
+    .prepare(`SELECT COUNT(*) AS n FROM deployments WHERE audit_status = 'pending'`)
+    .get() as { n: number } | undefined)?.n ?? 0;
+  let sizeDeleted = 0;
+  if (remaining > PENDING_DEPLOYMENTS_MAX_ROWS) {
+    const overflow = remaining - PENDING_DEPLOYMENTS_MAX_ROWS;
+    sizeDeleted = (rawDb
+      .prepare(
+        `DELETE FROM deployments
+          WHERE id IN (
+            SELECT id FROM deployments
+              WHERE audit_status = 'pending'
+              ORDER BY detected_at ASC
+              LIMIT ?
+          )`,
+      )
+      .run(overflow).changes) as number;
+  }
+  result.pendingDeployments = ageDeleted + sizeDeleted;
 
   if (opts.vacuum) {
     rawDb.exec("VACUUM");

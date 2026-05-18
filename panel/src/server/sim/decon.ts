@@ -34,6 +34,28 @@ if (!g.__deconInflight) g.__deconInflight = new Map();
 const cache = g.__deconCache!;
 const inflight = g.__deconInflight!;
 
+// Bound the decon cache. Each entry is a DeconResult with `functions[]` — a
+// 100-function contract is 10-50 KB. Unbounded growth over thousands of
+// unique bytecodes was a primary contributor to the panel's heap climbing
+// past 5 GB and getting OOM'd by V8 (PM2 restarts on 2026-05-18).
+//
+// Insertion order in JS Map is preserved, so trimming the first N entries
+// drops the OLDEST inserts — a simple FIFO eviction that's good enough
+// since decon results are deterministic from the bytecode and re-deriving
+// them is cheap (~100ms per contract).
+const MAX_DECON_CACHE_ENTRIES = Number(process.env.SIM_DECON_CACHE_MAX ?? 2000);
+
+function trimDeconCache() {
+  if (cache.size <= MAX_DECON_CACHE_ENTRIES) return;
+  const overflow = cache.size - MAX_DECON_CACHE_ENTRIES;
+  let dropped = 0;
+  for (const key of cache.keys()) {
+    if (dropped >= overflow) break;
+    cache.delete(key);
+    dropped++;
+  }
+}
+
 function bytecodeKey(bytecodeHex: string): string {
   // hash of the bytecode itself rather than relying on caller-supplied hash —
   // we want decon results keyed independently of how the runner labels them.
@@ -51,6 +73,7 @@ export async function deconBytecode(bytecodeHex: string): Promise<DeconResult> {
   try {
     const res = await p;
     cache.set(key, res);
+    trimDeconCache();
     return res;
   } finally {
     inflight.delete(key);

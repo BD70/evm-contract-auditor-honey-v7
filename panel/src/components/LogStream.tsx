@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, HStack, Input, Stack, Text, Badge, Button } from "@chakra-ui/react";
-import { useEffect, useRef, useState, useCallback, memo } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { LuPause, LuPlay, LuTrash, LuChevronRight, LuChevronDown } from "react-icons/lu";
 
 interface LogLine {
@@ -131,12 +131,32 @@ export function LogStream({
     }
   }, [lines, follow]);
 
-  const filtered = lines.filter((l) => {
-    if (levelFilter !== "all" && l.level !== levelFilter) return false;
-    if (slugFilter !== "all" && l.slug !== slugFilter) return false;
-    if (filter && !l.msg.toLowerCase().includes(filter.toLowerCase())) return false;
-    return true;
-  });
+  // Memoise the filter pipeline. Previously `filtered` was recomputed on
+  // every render (including the 4 Hz flush tick), which together with the
+  // per-chain count loop in the slug <select> below was the dominant cost
+  // on the runners page (O(chains * lines) per render at ~4-10 renders/s).
+  const lowerFilter = filter.toLowerCase();
+  const filtered = useMemo(
+    () =>
+      lines.filter((l) => {
+        if (levelFilter !== "all" && l.level !== levelFilter) return false;
+        if (slugFilter !== "all" && l.slug !== slugFilter) return false;
+        if (lowerFilter && !l.msg.toLowerCase().includes(lowerFilter)) return false;
+        return true;
+      }),
+    [lines, levelFilter, slugFilter, lowerFilter],
+  );
+
+  // Per-slug line counts, derived ONCE per lines change instead of per
+  // <option> on every render (was O(slugs * lines) and ran ~4x/sec).
+  const slugCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const l of lines) {
+      if (!l.slug) continue;
+      counts[l.slug] = (counts[l.slug] ?? 0) + 1;
+    }
+    return counts;
+  }, [lines]);
 
   const handleClear = useCallback(() => {
     pendingRef.current = [];
@@ -194,14 +214,11 @@ export function LogStream({
               }}
             >
               <option value="all">all chains ({lines.length})</option>
-              {slugs.map((s) => {
-                const count = lines.filter((l) => l.slug === s).length;
-                return (
-                  <option key={s} value={s}>
-                    {s} ({count})
-                  </option>
-                );
-              })}
+              {slugs.map((s) => (
+                <option key={s} value={s}>
+                  {s} ({slugCounts[s] ?? 0})
+                </option>
+              ))}
             </select>
             {slugFilter !== "all" && (
               <Button size="xs" variant="ghost" colorPalette="gray" onClick={() => setSlugFilter("all")}>
@@ -262,11 +279,17 @@ const LogRow = memo(function LogRow({
   showChain: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const fields = structuredFields(line.raw);
-  const hasNested =
-    line.raw &&
-    typeof line.raw === "object" &&
-    Object.values(line.raw).some((v) => v && typeof v === "object");
+  // structuredFields walks line.raw — memo on line identity so a re-render
+  // caused by a sibling row's expansion or the filter input doesn't redo
+  // the work for every row.
+  const fields = useMemo(() => structuredFields(line.raw), [line.raw]);
+  const hasNested = useMemo(
+    () =>
+      line.raw &&
+      typeof line.raw === "object" &&
+      Object.values(line.raw).some((v) => v && typeof v === "object"),
+    [line.raw],
+  );
   const expandable = fields.length > 4 || hasNested;
   const levelColor = LEVEL_COLOR[line.level] ?? "gray";
   const isBad = line.level === "error" || line.level === "stderr" || line.level === "warn";

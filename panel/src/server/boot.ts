@@ -16,6 +16,7 @@ const g = globalThis as unknown as Globals;
 export function bootOnce() {
   if (g.__panelBooted) return;
   g.__panelBooted = true;
+  raiseFdLimit();
   try {
     ensurePanelDirs();
     ingestWatcher.startIfNeeded();
@@ -41,4 +42,34 @@ export function bootOnce() {
     console.warn("[panel] boot warning:", err);
   }
   void runnerController; // keep singleton resident
+}
+
+/**
+ * Raise the soft file-descriptor limit so Next.js + sqlite + chokidar +
+ * anvil sockets don't trip EMFILE. macOS launchctl's default soft maxfiles
+ * is 256 which is well below what we need. Previously this was done in the
+ * PM2 launcher via `/bin/sh -c "ulimit -n 65536 && ..."`, but that wrapper
+ * hid the real Next.js PID from PM2's memory monitor — so we now launch
+ * Next directly and raise FDs here as a defensive belt.
+ */
+function raiseFdLimit() {
+  try {
+    // process.setrlimit isn't in Node's public API on all platforms; use the
+    // posix bridge when available. On macOS the soft limit can be raised up
+    // to kern.maxfilesperproc (~184320) without root.
+    const anyProc = process as unknown as {
+      getrlimit?: (r: string) => { soft: number; hard: number };
+      setrlimit?: (r: string, l: { soft: number; hard: number }) => void;
+    };
+    if (typeof anyProc.setrlimit === "function" && typeof anyProc.getrlimit === "function") {
+      const cur = anyProc.getrlimit("nofile");
+      const target = Math.min(65_536, cur.hard);
+      if (cur.soft < target) {
+        anyProc.setrlimit("nofile", { soft: target, hard: cur.hard });
+        console.info(`[panel] raised RLIMIT_NOFILE soft ${cur.soft} -> ${target} (hard=${cur.hard})`);
+      }
+    }
+  } catch (err) {
+    console.warn("[panel] could not raise FD limit (continuing):", err);
+  }
 }
