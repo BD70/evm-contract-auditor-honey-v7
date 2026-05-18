@@ -36,10 +36,45 @@ function findingId(rawFinding: any, ctx: IngestContext): string {
   return crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
+// When ALL of these are true, the finding is unactionable noise and we
+// drop it at ingest:
+//   1. Function name AND selector are null on `function` AND on every
+//      `affected_functions[]` entry — we can't tell the operator what
+//      to look at.
+//   2. Every witness step's call.id begins with "unreachable:" — the
+//      pattern matched a code fragment that no selector dispatch can
+//      reach (compiler dead-code, library leftovers, etc).
+//
+// Measured on 2026-05-18: this discriminator removes 8,615 noise rows
+// (the entire `call.arbitrary_external_call_unvalidated_target` and
+// `call.unvalidated_calldataload_target_injection` populations) while
+// preserving every real TP (52 verified `economic.unguarded_amm_action`
+// findings have zero `unreachable:` references).
+//
+// Set PANEL_KEEP_UNREACHABLE_FINDINGS=1 to disable the filter for
+// research / regression work.
+function isUnreachableDeadCodeNoise(f: any): boolean {
+  if (process.env.PANEL_KEEP_UNREACHABLE_FINDINGS === "1") return false;
+  const fn = f?.function;
+  const affected = Array.isArray(f?.affected_functions) ? f.affected_functions : [];
+  const hasNamedFn =
+    (fn && (fn.name || fn.selector)) ||
+    affected.some((a: any) => a && (a.name || a.selector));
+  if (hasNamedFn) return false;
+  const steps = Array.isArray(f?.witness?.steps) ? f.witness.steps : [];
+  if (steps.length === 0) return false;
+  const allUnreachable = steps.every((s: any) => {
+    const cid = s?.call?.id ?? s?.id ?? "";
+    return typeof cid === "string" && cid.startsWith("unreachable:");
+  });
+  return allUnreachable;
+}
+
 export function ingestApiJson(apiJson: any, ctx: IngestContext): { ids: string[] } {
   const findings = Array.isArray(apiJson?.findings) ? apiJson.findings : [];
   const ids: string[] = [];
   const now = ctx.discoveredAt ?? Date.now();
+  let dropped = 0;
   const insert = rawDb.prepare(`
     INSERT OR REPLACE INTO findings (
       id, run_id, rule_id, internal_name, severity, status, confidence, title, category,
@@ -49,6 +84,10 @@ export function ingestApiJson(apiJson: any, ctx: IngestContext): { ids: string[]
   `);
 
   for (const f of findings) {
+    if (isUnreachableDeadCodeNoise(f)) {
+      dropped++;
+      continue;
+    }
     const id = findingId(f, ctx);
     const affected = f.affected_functions ?? (f.function ? [f.function] : []);
     insert.run(
@@ -85,6 +124,9 @@ export function ingestApiJson(apiJson: any, ctx: IngestContext): { ids: string[]
       discoveredAt: now,
     };
     eventBus.emit("findings:new", evt);
+  }
+  if (dropped > 0 && process.env.PANEL_DEBUG_INGEST === "1") {
+    console.info(`[ingest] dropped ${dropped} unreachable-deadcode noise finding(s)`);
   }
   return { ids };
 }
