@@ -51,16 +51,16 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       min_uptime: "30s",
-      // v10: lowered from 5120→2048 MB after fixing ingest-watcher memory leak
-      // (dir mtime caching skips unchanged dirs, interval 5s→15s). The leak was
-      // 55k readdir+JSON.parse calls every 5s creating 5GB of GC churn. With the
-      // fix, steady-state is ~300-500MB. pm2 restarts at 1800MB as safety net.
-      max_memory_restart: "1800M",
+      // v11: raised to 3GB — rescue-prove creates Anvil fork sessions that
+      // temporarily spike RSS during drain attempts. The exposure cache is
+      // now capped at 500 entries (was unbounded). PM2 restarts at 3GB as
+      // the hard safety net; normal steady-state is 400-800MB.
+      max_memory_restart: "3000M",
       kill_timeout: 5000,
       env: {
         ...dotenv,
         NODE_ENV: "production",
-        NODE_OPTIONS: "--max-old-space-size=2048",
+        NODE_OPTIONS: "--max-old-space-size=3072 --expose-gc",
       },
     },
   ],

