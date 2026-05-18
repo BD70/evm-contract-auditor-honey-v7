@@ -65,6 +65,15 @@ if (!g.__unsupportedHosts) g.__unsupportedHosts = new Set();
 const cache = g.__exposureCache!;
 const unsupportedHosts = g.__unsupportedHosts!;
 
+const MAX_CACHE_ENTRIES = 500;
+
+function trimExposureCache() {
+  if (cache.size <= MAX_CACHE_ENTRIES) return;
+  const entries = [...cache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt);
+  const toRemove = entries.slice(0, entries.length - MAX_CACHE_ENTRIES);
+  for (const [k] of toRemove) cache.delete(k);
+}
+
 function cacheKey(chainId: number, address: string): string {
   return `${chainId}:${address.toLowerCase()}`;
 }
@@ -392,6 +401,7 @@ export async function batchExposure(reqs: ExposureRequest[]): Promise<Record<str
         const exp = await fetchExposureOne(item.chainId, item.address);
         const k = cacheKey(item.chainId, item.address);
         cache.set(k, exp);
+        trimExposureCache();
         out[k] = exp;
       }),
     ),

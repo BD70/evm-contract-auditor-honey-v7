@@ -76,8 +76,6 @@ async function maybeRunRescueProve(input: {
   ruleId: string;
   evidence: unknown;
 }): Promise<void> {
-  // Lazy import keeps the worker's cold-start small and avoids pulling the
-  // exposure pipeline into hot paths that don't need it.
   const { rescueProve } = await import("./rescue-prove");
   await rescueProve({
     findingId: input.findingId,
@@ -86,6 +84,7 @@ async function maybeRunRescueProve(input: {
     ruleId: input.ruleId,
     evidence: (input.evidence as any) ?? {},
   });
+  if (typeof globalThis.gc === "function") globalThis.gc();
 }
 
 const POLL_INTERVAL_MS = Number(process.env.SIM_POLL_INTERVAL_MS ?? 15_000);
