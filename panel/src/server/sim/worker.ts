@@ -60,12 +60,18 @@ const RESCUE_PROVE_ENABLED =
 
 function rescueProveEligible(ruleId: string): boolean {
   if (!RESCUE_PROVE_ENABLED) return false;
+  // Keep in sync with `ruleFamilyOf` in rescue-prove.ts. Every family that has
+  // a build*Drain function MUST have its prefix listed here, otherwise
+  // verified findings produce no rescue plan ("wired in rescue-prove but gated
+  // out by the worker" was a real footgun fixed on 2026-05-18).
   return (
     ruleId.startsWith("call.") ||
     ruleId.startsWith("control.unguarded_selfdestruct") ||
     ruleId.startsWith("init.") ||
     ruleId.startsWith("economic.") ||
-    ruleId.startsWith("proxy.")
+    ruleId.startsWith("proxy.") ||
+    ruleId.startsWith("bridge.") ||
+    ruleId === "defi.erc4626.withdraw.missing_caller_authorization"
   );
 }
 

