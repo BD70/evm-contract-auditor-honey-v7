@@ -474,7 +474,13 @@ export function FindingsTable() {
   const [sevFilter, setSevFilter] = useState<string[]>([]);
   const [source, setSource] = useState<string>("");
   const [chainId, setChainId] = useState<string>("");
-  const [simFilter, setSimFilter] = useState<string[]>([]);
+  // Default to verified-only. ~92% of rows in production are static-only
+  // hits from two high-volume noisy rules (call.arbitrary_external_call_*
+  // and call.unvalidated_calldataload_*) whose simulation_status is NULL
+  // (queued) or `not_exploitable` (FP). Showing them on first load
+  // buries the actual TPs. The "FP", "?" and "queued" toggle buttons
+  // are right above the table — one click each to widen the view.
+  const [simFilter, setSimFilter] = useState<string[]>(["verified"]);
   const [hideAdminOnly, setHideAdminOnly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

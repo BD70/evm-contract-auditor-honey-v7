@@ -6,6 +6,7 @@ import { ingestWatcher } from "./ingest-watcher";
 import { runnerController } from "./runner-controller";
 import { ensurePanelDirs } from "./paths";
 import { ensurePruneSchedule } from "./prune-job";
+import { ensureExposurePrewarmer } from "./exposure-prewarm";
 import { auditorBinInfo } from "./auditor-bin";
 import { simWorker } from "./sim/worker";
 import { startTgBot, tgBotEnabled } from "./rescue/tg-bot";
@@ -21,6 +22,7 @@ export function bootOnce() {
     ensurePanelDirs();
     ingestWatcher.startIfNeeded();
     ensurePruneSchedule();
+    ensureExposurePrewarmer();
     void simWorker.startIfNeeded().catch((err) => console.warn("[sim] startIfNeeded failed", err));
     if (tgBotEnabled()) {
       void startTgBot().catch((err) => console.warn("[tg-bot] start failed", err));
