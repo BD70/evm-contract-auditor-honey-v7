@@ -104,6 +104,47 @@ export interface DeploymentInput {
   rawJson?: any;
 }
 
+// Hard cap on the pending-deployments table. Without a consumer the runner
+// firehose can pump 100+ rows/sec, far faster than the periodic pruner can
+// keep up. Enforce the cap right here in the insertion path so the table
+// can never exceed the bound regardless of prune cadence. Backstop only —
+// the periodic prune-job is still the canonical cleanup.
+const PENDING_DEPLOYMENTS_HARD_CAP = Number(
+  process.env.PANEL_DEPLOYMENTS_HARD_CAP ?? 5_000,
+);
+// Probabilistic trim: rather than counting on every insert (which would
+// hammer the DB at ~100 inserts/sec), only check every Nth insert. The
+// cap is still respected within a small overshoot window (~CHECK_EVERY
+// rows above the cap, worst case).
+const PENDING_DEPLOYMENTS_TRIM_EVERY = 200;
+let _pendingDeploymentsInsertCounter = 0;
+
+function maybeTrimPendingDeployments() {
+  _pendingDeploymentsInsertCounter++;
+  if (_pendingDeploymentsInsertCounter % PENDING_DEPLOYMENTS_TRIM_EVERY !== 0) return;
+  try {
+    const row = rawDb
+      .prepare(`SELECT COUNT(*) AS n FROM deployments WHERE audit_status = 'pending'`)
+      .get() as { n: number } | undefined;
+    const n = row?.n ?? 0;
+    if (n <= PENDING_DEPLOYMENTS_HARD_CAP) return;
+    const overflow = n - PENDING_DEPLOYMENTS_HARD_CAP;
+    rawDb
+      .prepare(
+        `DELETE FROM deployments
+          WHERE id IN (
+            SELECT id FROM deployments
+              WHERE audit_status = 'pending'
+              ORDER BY detected_at ASC
+              LIMIT ?
+          )`,
+      )
+      .run(overflow);
+  } catch (err) {
+    console.warn("[findings-store] inline pending-deployments trim failed", err);
+  }
+}
+
 export function upsertDeployment(d: DeploymentInput) {
   const id = `${d.chainId ?? 0}:${d.txHash}:${d.contractAddress ?? ""}`;
   rawDb
@@ -128,6 +169,7 @@ export function upsertDeployment(d: DeploymentInput) {
       d.runnerEventId ?? null,
       d.rawJson ? JSON.stringify(d.rawJson) : null,
     );
+  if (d.auditStatus === "pending") maybeTrimPendingDeployments();
 }
 
 export interface FindingsQuery {

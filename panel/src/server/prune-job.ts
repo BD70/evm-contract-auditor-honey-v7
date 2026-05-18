@@ -149,13 +149,18 @@ export function ensurePruneSchedule() {
       console.warn("[panel] prune-on-boot failed", err);
     }
   }, 30_000).unref();
-  // Then hourly.
+  // Then every 5 minutes. The pending-deployments table is the main growth
+  // surface: the runner firehose pumps thousands of rows/hour at ~7 KB each.
+  // Hourly was way too lax — measured 500+ MB growth in a single hour on
+  // 2026-05-18. 5 minutes keeps the table within a tight band without
+  // significant CPU cost (each pass is two indexed DELETEs).
+  const intervalMs = Number(process.env.PANEL_PRUNE_INTERVAL_MS ?? 5 * 60 * 1000);
   g.__panelPruneTimer = setInterval(() => {
     try {
       runPrune();
     } catch (err) {
       console.warn("[panel] prune scheduled run failed", err);
     }
-  }, 60 * 60 * 1000);
+  }, intervalMs);
   g.__panelPruneTimer.unref();
 }
