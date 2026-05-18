@@ -5,6 +5,8 @@
     "build": "next build",
     "start": "next start",
     "type-check": "tsc",
+    "check:rules": "tsx scripts/check-rule-alignment.ts",
+    "test": "npm run type-check && npm run check:rules",
     "db:generate": "drizzle-kit generate",
     "sim:corpus": "tsx src/server/sim/__corpus__/runner.ts"
   },

@@ -64,6 +64,17 @@ const (
 	ozTimelockExecute            = "134008d3"
 
 	ozInitSlotV5 = "f0c57e16840df040f15088dc2f81fe391c3923bec73e23a9662efc9c229c6a00"
+
+	// Bridge selectors — cross-chain import/relay surfaces.
+	bridgeSubmitImportsSelector     = "e03a0460" // submitImports(bytes)
+	bridgeProveImportsSelector      = "7f00c7a6" // proveImports(bytes,bytes)
+	bridgeProcessTxSelector         = "8f84aa09" // processTransactions(bytes)
+	bridgeRelayMessageSelector      = "d764ad0b" // relayMessage(uint256,address,address,uint256,uint256,bytes)
+	bridgeExecuteMessageSelector    = "21d800ec" // executeMessage(bytes,bytes)
+	bridgeFinalizeDepositSelector   = "1532ec34" // finalizeDeposit(address,address,uint256)
+	bridgeClaimSelector             = "2e7ba6ef" // claim(uint256,address,uint256,bytes32[])
+	bridgeReceiveMessageSelector    = "46b4a769" // receiveMessage(bytes)
+	bridgeOnMessageReceivedSelector = "34d5386d" // onMessageReceived(address,uint64,bytes)
 )
 
 // Result mirrors Python BytecodeFingerprint.
@@ -101,6 +112,9 @@ type Result struct {
 	ImplementationAddress  string
 	ProxySelectorsFound    []string
 	DiamondLoupeSelectors  int
+
+	HasBridgePattern       bool
+	BridgeSelectorsFound   []string
 }
 
 // Fingerprint analyzes raw bytecode hex for known patterns.
@@ -127,6 +141,7 @@ func Fingerprint(bytecodeHex string) Result {
 	detectSafeERC20(bc, &r)
 	detectReentrancyGuard(bc, &r)
 	detectInitializer(bc, &r)
+	detectBridge(bc, &r)
 	classifyProxyType(&r)
 	buildTags(&r)
 	return r
@@ -421,6 +436,31 @@ func detectInitializer(bc string, r *Result) {
 	}
 }
 
+func detectBridge(bc string, r *Result) {
+	bridgeSelectors := []struct {
+		sel  string
+		name string
+	}{
+		{bridgeSubmitImportsSelector, "submitImports"},
+		{bridgeProveImportsSelector, "proveImports"},
+		{bridgeProcessTxSelector, "processTransactions"},
+		{bridgeRelayMessageSelector, "relayMessage"},
+		{bridgeExecuteMessageSelector, "executeMessage"},
+		{bridgeFinalizeDepositSelector, "finalizeDeposit"},
+		{bridgeClaimSelector, "claim"},
+		{bridgeReceiveMessageSelector, "receiveMessage"},
+		{bridgeOnMessageReceivedSelector, "onMessageReceived"},
+	}
+	for _, s := range bridgeSelectors {
+		if strings.Contains(bc, s.sel) {
+			r.BridgeSelectorsFound = append(r.BridgeSelectorsFound, s.name)
+		}
+	}
+	if len(r.BridgeSelectorsFound) >= 2 {
+		r.HasBridgePattern = true
+	}
+}
+
 func classifyProxyType(r *Result) {
 	switch {
 	case r.HasERC1167Clone:
@@ -559,6 +599,9 @@ func buildTags(r *Result) {
 	}
 	if r.HasSafeERC20 {
 		add("SAFE_ERC20_USAGE", "safeTransfer")
+	}
+	if r.HasBridgePattern {
+		add("BRIDGE_PATTERN", "CROSS_CHAIN_BRIDGE", "bridge_import_surface")
 	}
 	allSafe := map[string]bool{
 		"TRANSPARENT_PROXY": true, "UUPS_PROXY": true, "BEACON_PROXY": true,

@@ -1,0 +1,13 @@
+{
+  "corpus_id": "bridge.forged_cross_chain_proof",
+  "description": "Cross-chain bridge import/relay surfaces with insufficient proof verification, enabling forged payload attacks.",
+  "fixtures": [
+    {
+      "id": "verichains_bridge_0x71518580",
+      "address": "0x71518580f36feceffe0721f06ba4703218cd7f63",
+      "chain_id": 1,
+      "expected_verdict": "verified",
+      "notes": "Real-world bridge contract affected by forged PartialTransactionProof in submitImports(). Attacker crafted proof that passed proveImports verification, and processTransactions executed three unauthorized transfers to drainer wallet."
+    }
+  ]
+}
