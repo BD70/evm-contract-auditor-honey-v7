@@ -701,6 +701,14 @@ func fingerprint(art *pipeline.Artifacts) map[string]any {
 	for i, s := range fp.ProxySelectorsFound {
 		sels[i] = s
 	}
+	bridgeSels := make([]any, len(fp.BridgeSelectorsFound))
+	for i, s := range fp.BridgeSelectorsFound {
+		bridgeSels[i] = s
+	}
+	vaultSels := make([]any, len(fp.ERC4626SelectorsFound))
+	for i, s := range fp.ERC4626SelectorsFound {
+		vaultSels[i] = s
+	}
 	return map[string]any{
 		"tags":                    tags,
 		"proxy_type":              nullableString(fp.ProxyType),
@@ -716,6 +724,10 @@ func fingerprint(art *pipeline.Artifacts) map[string]any {
 		"implementation_address":  nullableString(fp.ImplementationAddress),
 		"diamond_loupe_selectors": fp.DiamondLoupeSelectors,
 		"proxy_selectors":         sels,
+		"has_bridge_pattern":      fp.HasBridgePattern,
+		"bridge_selectors":        bridgeSels,
+		"has_erc4626_pattern":     fp.HasERC4626Pattern,
+		"erc4626_selectors":       vaultSels,
 	}
 }
 

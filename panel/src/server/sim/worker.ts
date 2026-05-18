@@ -24,6 +24,7 @@ import {
   SUPPORTED_RULES,
   VERIFIERS,
 } from "./exploits";
+import { runAllSidecars } from "./sidecar";
 import type { VerifyResult, VerdictStatus } from "./types";
 import { batchExposure, type Exposure } from "../exposure";
 import { exposureSurfaceForRule, surfaceLabel, type ExposureSurface } from "./rule-surface";
@@ -564,26 +565,29 @@ class SimWorker {
     else if (result.status === "error") this.stats.errored++;
     else this.stats.skipped++;
 
-    // Sidecar pass: run the economic-attack verifier on this contract if
-    // (a) it's enabled, (b) the primary verifier isn't the economic-attack
-    // one (avoid recursion), (c) we have the basic inputs. Result is cached
-    // by (bytecode_hash, sidecar rule_id) so the same bytecode is verified
-    // exactly once across all its clones.
-    if (
-      SIDECAR_ECON_ENABLED &&
-      first.contract_address &&
-      first.chain_id != null &&
-      engineInfo.engine !== "anvil-fork-economic"
-    ) {
+    // Sidecar pass: run every registered sidecar on this contract. Each
+    // sidecar has its own cheap-gate (see SIDECARS in ./sidecar.ts) — most
+    // early-exit on contracts that don't match their target shape. Findings
+    // are idempotent by (chain, address, rule_id). Cached per
+    // (bytecode_hash, rule_id, engine, engine_version) so the same bytecode
+    // is verified once across all its clones.
+    if (first.contract_address && first.chain_id != null) {
       try {
-        await runEconomicSidecar({
+        await runAllSidecars({
           chainId: first.chain_id,
           contractAddress: first.contract_address,
           bytecodeHash: first.bytecode_hash,
           sourceFindingId: first.id,
+          // Audit context is not threaded through the queue here — sidecars
+          // without a static gate run unconditionally. For the on-demand
+          // /api/simulation path we pass full audit context (see
+          // runAllSidecarsWithAudit) so gates DO apply.
+          excludeRuleId: engineInfo.engine === "anvil-fork-economic"
+            ? "economic.unguarded_amm_action"
+            : undefined,
         });
       } catch (err) {
-        console.warn("[sim] economic sidecar failed", err);
+        console.warn("[sim] sidecar pass failed", err);
       }
     }
 
@@ -775,174 +779,21 @@ export async function runEconomicSidecar(args: {
    *  run the user just triggered. */
   runId?: string;
 }): Promise<{ ran: boolean; status?: string; findingId?: string; cached?: boolean }> {
-  if (!SIDECAR_ECON_ENABLED) return { ran: false };
-  const econVerifier = findVerifier(SIDECAR_ECON_RULE);
-  if (!econVerifier) return { ran: false };
-  const engine = econVerifier.id;
-  const version = econVerifier.version;
-
-  const existing = rawDb
-    .prepare(
-      `SELECT id FROM findings
-       WHERE rule_id = ?
-         AND lower(contract_address) = lower(?)
-         AND chain_id = ?
-       LIMIT 1`,
-    )
-    .get(SIDECAR_ECON_RULE, args.contractAddress, args.chainId) as { id: string } | undefined;
-  if (existing) {
-    // Idempotent re-link: a previous run already produced this sidecar
-    // finding. If this call came from a manual audit, attach the run_id so
-    // GET /api/audits/[runId] surfaces it under the user's run.
-    if (args.runId) {
-      try {
-        rawDb
-          .prepare(`UPDATE findings SET run_id = ? WHERE id = ? AND (run_id IS NULL OR run_id = '')`)
-          .run(args.runId, existing.id);
-      } catch {}
-    }
-    return { ran: false, findingId: existing.id, cached: true };
-  }
-
-  let result: VerifyResult | null = null;
-  let cachedHit = false;
-
-  if (args.bytecodeHash) {
-    const cached = rawDb
-      .prepare(
-        `SELECT status, verdict, evidence_json, duration_ms
-         FROM simulation_cache
-         WHERE bytecode_hash = ? AND rule_id = ? AND engine = ? AND engine_version = ?`,
-      )
-      .get(args.bytecodeHash, SIDECAR_ECON_RULE, engine, version) as
-      | { status: string; verdict: string | null; evidence_json: string | null; duration_ms: number }
-      | undefined;
-    if (cached) {
-      cachedHit = true;
-      result = {
-        status: cached.status as VerdictStatus,
-        verdict: cached.verdict ?? undefined,
-        engine,
-        engineVersion: version,
-        evidence: cached.evidence_json ? safeParse(cached.evidence_json) : {},
-        durationMs: cached.duration_ms,
-      };
-    }
-  }
-
-  if (!result) {
-    result = await verifyFinding({
-      chainId: args.chainId,
-      contractAddress: args.contractAddress,
-      ruleId: SIDECAR_ECON_RULE,
-    });
-    if (args.bytecodeHash) {
-      try {
-        rawDb
-          .prepare(
-            `INSERT OR REPLACE INTO simulation_cache
-               (bytecode_hash, rule_id, engine, engine_version, status, verdict, evidence_json, simulated_at, duration_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            args.bytecodeHash,
-            SIDECAR_ECON_RULE,
-            engine,
-            version,
-            result.status,
-            result.verdict ?? null,
-            JSON.stringify(result.evidence),
-            Date.now(),
-            result.durationMs,
-          );
-      } catch (err) {
-        console.warn("[sim] sidecar cache write failed", err);
-      }
-    }
-  }
-
-  if (result.status !== "verified") return { ran: true, status: result.status, cached: cachedHit };
-
-  // Materialise a new finding row tagged as sidecar product.
-  const id = `sidecar-econ-${createHash("sha1")
-    .update(`${args.chainId}:${args.contractAddress.toLowerCase()}:${SIDECAR_ECON_RULE}`)
-    .digest("hex")
-    .slice(0, 24)}`;
-  const now = Date.now();
-  const evidence: any = result.evidence ?? {};
-  const attackerKind = evidence.attackerKind ?? "any";
-  const viaStatic = Boolean(evidence.viaStaticEvidence);
-  const sigKind: string | undefined = evidence.staticSignatureKind;
-  let title: string;
-  if (sigKind === "pair-direct") {
-    title =
-      "Permissionless pair-direct manipulation (sync/skim/burn) — deflationary-burn / flash-loan exploitable";
-  } else if (sigKind === "both") {
-    title =
-      "Permissionless function with router swap AND pair-direct manipulation — flash-loan exploitable";
-  } else if (viaStatic) {
-    title = "Permissionless function triggers AMM swap (static evidence) — flash-loan exploitable";
-  } else {
-    title = "Permissionless function triggers AMM swap — flash-loan exploitable";
-  }
-
-  const raw = {
-    sidecar: true,
-    source_finding_id: args.sourceFindingId,
-    cached: cachedHit,
-    attackerKind,
-    viaStaticEvidence: viaStatic,
-    summary:
-      "Sidecar verifier (anvil-fork-economic) confirmed this contract exposes a " +
-      "permissionless function that reaches an AMM router swap. Vulnerable to flash-loan " +
-      "price manipulation.",
-  };
-  try {
-    rawDb
-      .prepare(
-        `INSERT OR IGNORE INTO findings
-           (id, run_id, rule_id, internal_name, severity, status, confidence, title, category,
-            bytecode_hash, contract_address, chain_id, discovered_at, source,
-            affected_functions_json, raw_json,
-            simulation_status, simulation_verdict, simulation_evidence_json,
-            simulation_engine, simulated_at)
-         VALUES
-           (?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?)`,
-      )
-      .run(
-        id,
-        args.runId ?? null,
-        SIDECAR_ECON_RULE,
-        "sidecar_economic_unguarded_amm_action_v1",
-        "critical",
-        "probable_vulnerability",
-        attackerKind === "any" ? "0.85" : "0.65",
-        title,
-        "access_control",
-        args.bytecodeHash ?? null,
-        args.contractAddress,
-        args.chainId,
-        now,
-        SIDECAR_ECON_SOURCE,
-        JSON.stringify([]),
-        JSON.stringify(raw),
-        result.status,
-        result.verdict ?? null,
-        JSON.stringify(evidence),
-        `${engine}@${version}`,
-        now,
-      );
-    console.info(
-      `[sim] sidecar economic-attack verified for chain=${args.chainId} addr=${args.contractAddress} ` +
-        `(attackerKind=${attackerKind}, viaStatic=${viaStatic}); finding=${id}`,
-    );
-    return { ran: true, status: "verified", findingId: id, cached: cachedHit };
-  } catch (err) {
-    console.warn("[sim] sidecar finding insert failed", err);
-    return { ran: true, status: "verified", cached: cachedHit };
-  }
+  // Backwards-compat wrapper: the canonical sidecar runner is in
+  // ./sidecar.ts and handles every sidecar rule. We delegate to it,
+  // filtering for the economic-only rule so existing call sites that only
+  // care about the economic sidecar still get the same shape.
+  const all = await runAllSidecars({
+    chainId: args.chainId,
+    contractAddress: args.contractAddress,
+    bytecodeHash: args.bytecodeHash ?? null,
+    sourceFindingId: args.sourceFindingId,
+    runId: args.runId,
+  });
+  const econ = all.find((r) => r.ruleId === SIDECAR_ECON_RULE);
+  return econ ?? { ran: false };
 }
+
+// Legacy economic-only sidecar implementation removed; canonical runner
+// now lives in ./sidecar.ts and dispatches every registered sidecar via
+// a single SIDECARS array.
