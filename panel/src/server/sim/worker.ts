@@ -25,6 +25,7 @@ import {
   VERIFIERS,
 } from "./exploits";
 import { runAllSidecars } from "./sidecar";
+import { safeStringify } from "./serialize";
 import type { VerifyResult, VerdictStatus } from "./types";
 import { batchExposure, type Exposure } from "../exposure";
 import { exposureSurfaceForRule, surfaceLabel, type ExposureSurface } from "./rule-surface";
@@ -532,7 +533,7 @@ class SimWorker {
             result.engineVersion,
             result.status,
             result.verdict ?? null,
-            JSON.stringify(result.evidence),
+            safeStringify(result.evidence),
             Date.now(),
             result.durationMs,
           );
@@ -637,7 +638,7 @@ class SimWorker {
         stmt.run(
           result.status,
           result.verdict ?? null,
-          JSON.stringify(result.evidence),
+          safeStringify(result.evidence),
           engineStr,
           at,
           r.id,

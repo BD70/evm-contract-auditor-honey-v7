@@ -116,6 +116,13 @@ func ToAPIJSON(audit, checker map[string]any, inputKind, inputValue, bytecodeHex
 		"findings":          apiFindings,
 		"warnings":          warnings,
 		"chain_context":     chainContext,
+		// Surfaced for downstream sidecar gates (panel/src/server/sim/sidecar.ts).
+		// Without these, gated sidecars (bridge, erc4626-withdraw, etc.) can't
+		// see the bytecode fingerprint and either over-run or skip silently.
+		// The fields are already computed in the behavior layer; passing them
+		// through is essentially free in payload size for downstream consumers.
+		"global_tags":          coalesceList(audit["global_tags"]),
+		"bytecode_fingerprint": coalesceMap(audit["bytecode_fingerprint"]),
 	}
 }
 

@@ -325,7 +325,7 @@ async function runOneSidecar(
             version,
             result.status,
             result.verdict ?? null,
-            JSON.stringify(result.evidence),
+            safeStringify(result.evidence),
             Date.now(),
             result.durationMs,
           );
@@ -354,6 +354,11 @@ async function runOneSidecar(
     attackerKind: evidence?.attackerKind ?? "any",
     summary: spec.summary,
   };
+  // Verifier evidence often contains bigints (token supplies, balances,
+  // calldata sizes). SQLite's JSON path uses JSON.stringify which throws
+  // on bigint — coerce them to decimal strings so cache writes succeed.
+  const evidenceJson = safeStringify(evidence);
+  const rawJson = safeStringify(raw);
   try {
     rawDb
       .prepare(
@@ -386,10 +391,10 @@ async function runOneSidecar(
         now,
         spec.source,
         JSON.stringify([]),
-        JSON.stringify(raw),
+        rawJson,
         result.status,
         result.verdict ?? null,
-        JSON.stringify(evidence),
+        evidenceJson,
         `${engine}@${version}`,
         now,
       );
@@ -410,3 +415,6 @@ function safeParse(json: string): any {
     return {};
   }
 }
+
+export { safeStringify } from "./serialize";
+import { safeStringify } from "./serialize";

@@ -172,7 +172,41 @@ func functionTags(art *pipeline.Artifacts, body []int, selector string, cards ma
 			tags[t] = struct{}{}
 		}
 	}
+	// Contract-level tags are propagated to every function's behavior_tags so
+	// per-function rules can read contract-scope facts. EXCEPT for the
+	// "this opcode appears SOMEWHERE in the bytecode" security flags below —
+	// those must remain at global scope only.
+	//
+	// If we copy `TX_ORIGIN_OBSERVED` into every function's tags, every
+	// function in a contract that uses tx.origin anywhere falsely advertises
+	// the behavior. The matcher then ANDs it with `reachable_effect_any` —
+	// which the decompiler can't always recover for complex dispatchers like
+	// Gnosis Safe — and the rule silently never matches the right function,
+	// while generating one no-op trace entry per function (noise).
+	//
+	// The per-function trace pass below re-adds these tags on the functions
+	// that genuinely contain the opcode (when stacksim recovers enough
+	// description text). Stateful and contract-scope rules read these flags
+	// from `global_tags`, not from function tags, so they are unaffected.
+	//
+	// SafeERC20-related tags are intentionally NOT excluded: rules like
+	// `token.unsafe_erc20_assumption` use them as contract-wide counter
+	// evidence (if SafeERC20 is used anywhere, suppress unsafe-erc20
+	// findings on this contract).
+	functionScopeExcluded := map[string]struct{}{
+		"TX_ORIGIN_OBSERVED": {},
+		"USES_TX_ORIGIN":     {},
+		"HAS_DELEGATECALL":   {},
+		"delegatecall":       {},
+		"HAS_SELFDESTRUCT":   {},
+		"selfdestruct":       {},
+		"HAS_CREATE2":        {},
+		"HAS_STATICCALL":     {},
+	}
 	for _, t := range contractTags {
+		if _, skip := functionScopeExcluded[t]; skip {
+			continue
+		}
 		add(t)
 	}
 	if art.Sim != nil {

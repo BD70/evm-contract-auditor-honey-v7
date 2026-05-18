@@ -263,13 +263,10 @@ export async function startAudit(input: AuditInput): Promise<StartedAudit> {
           // sidecars on contracts the Go side finds clean — the gate sees
           // `ERC4626` in global_tags and runs the verifier even though no
           // primary finding exists.
-          // NOTE: `api` here is the --format api-json output which doesn't
-          // include bytecode_fingerprint / global_tags. Without an audit
-          // context, gated sidecars (e.g. bridge, erc4626-withdraw) run
-          // UNCONDITIONALLY here — each verifier's own early-exit (no
-          // matching selectors → not_exploitable in milliseconds) keeps the
-          // cost bounded. TODO: switch audit-service to `--format json` so
-          // we can pass real fingerprint/tags and apply the gates.
+          //
+          // `bytecode_fingerprint` and `global_tags` are surfaced in the
+          // api-json envelope (see go/internal/check/apijson/api.go) so
+          // gates receive real data here.
           const fp = (api?.bytecode_fingerprint ?? {}) as Record<string, unknown>;
           const tags = Array.isArray(api?.global_tags)
             ? (api.global_tags as unknown[]).map(String)
